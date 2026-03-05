@@ -423,32 +423,81 @@ struct SimpleResynth
             mag_smooth[k] *= tilt_gain;
         }
 
+        // Spectral sparsity: thin out bins in a way that moves from subtle
+        // spectral "density shaping" at low values into clustered, formant-like
+        // bands and animated, noisy structures at high values.
         float sparsity_used = sparsity;
         if(pitch_lock_mode_)
         {
-            // In pitch‑locked mode, keep sparsity gentler so spectra remain rich
+            // In pitch-locked mode, keep sparsity gentler so spectra remain rich
             // and on-pitch instead of breaking into too-sparse, noisy clusters.
             sparsity_used *= 0.5f;
         }
         if (sparsity_used > 0.0f && max_mag > 0.0f)
         {
-            // Soft-knee sparsity: gradually attenuate bins around the threshold
-            // instead of hard-gating them to zero, to avoid frame-to-frame
-            // jumps in spectral energy.
-            float thresh = max_mag * (0.9f * sparsity_used);
-            float knee   = 0.2f * thresh;  // small band around thresh
+            // 1) Non-linear CV response: concentrate most of the "interesting"
+            // region into the upper half of the control so low values act more
+            // like a gentle density shaper.
+            float s = sparsity_used;
+            float s_shaped = s * s * (3.0f - 2.0f * s); // smoothstep-ish 0..1
+
+            // 2) Frequency-tilted threshold: keep lows a bit denser and let
+            // highs thin out more so the top end becomes fizzy/grainy instead
+            // of simply disappearing.
+            const float base_thresh_scale = 0.65f;
+            const float band_tilt = 0.60f;
+
+            // 3) Soft-knee behaviour with a modest "keep floor" so bins in the
+            // knee region are attenuated but not fully removed.
+            const float knee_frac = 0.15f;
+            const float keep_in_knee = 0.4f;
+
             for (size_t k = 0; k <= kNumBins; ++k)
             {
                 float m = mag_smooth[k];
+                if (m <= 0.0f)
+                {
+                    mag_smooth[k] = 0.0f;
+                    continue;
+                }
+
+                // Normalised band position 0..1
+                float w = (kNumBins > 0) ? (static_cast<float>(k) / static_cast<float>(kNumBins)) : 0.0f;
+                // Lows see a slightly lower effective sparsity, highs see more.
+                float band_scale = 1.0f + band_tilt * (w - 0.5f) * 2.0f; // ~0.65..1.35
+                if (band_scale < 0.4f) band_scale = 0.4f;
+                if (band_scale > 1.6f) band_scale = 1.6f;
+
+                float s_band = s_shaped * band_scale;
+                if (s_band < 0.0f) s_band = 0.0f;
+                if (s_band > 1.0f) s_band = 1.0f;
+
+                float thresh = max_mag * (base_thresh_scale * s_band);
+                float knee   = knee_frac * thresh;
+
+                if (thresh <= 0.0f || knee <= 0.0f)
+                {
+                    // Very low sparsity: effectively bypass.
+                    mag_smooth[k] = m;
+                    continue;
+                }
+
                 if (m < thresh - knee)
                 {
-                    m = 0.0f;
+                    // Off-bins far below the local peak region: strongly attenuate
+                    // but keep a tiny residue so extreme sparsity remains textured.
+                    m *= 0.15f * (1.0f + 0.5f * s_band);
                 }
                 else if (m < thresh + knee)
                 {
-                    // Partially attenuate bins in the knee region.
-                    m *= 0.5f;
+                    // Partially attenuate bins in the knee region, preserving
+                    // small formant-like clusters around stronger peaks.
+                    float t = (m - (thresh - knee)) / (2.0f * knee); // 0..1 across knee
+                    float gain = keep_in_knee + (1.0f - keep_in_knee) * t;
+                    m *= gain;
                 }
+                // Else: leave strong peaks mostly intact.
+
                 mag_smooth[k] = m;
             }
         }
@@ -651,20 +700,28 @@ struct SimpleResynth
                 // Gains taper so partials sit with the resynthesis (harmonically rich but blended).
                 // Slightly stronger than before so that the harmonic scaffold can more
                 // confidently drive the output towards a full-scale Eurorack level.
-                const float gains[]       = { 0.75f, 0.55f, 0.40f, 0.30f, 0.24f, 0.20f };  // h=1..6
-                const int   num_harmonics = 6;
+                // More assertive harmonic scaffold so the V/OCT‑driven stack reads
+                // clearly as a pitched voice instead of a subtle coloration.
+                const float gains[]       = {
+                    1.5f, 1.2f, 1.0f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f
+                }; // h = 1..8
+                const int   num_harmonics = 8;
 
-                // Mode‑dependent scaffold strength: in pitch‑locked mode we apply a
-                // stronger reinforcement so the perceived pitch snaps confidently
-                // to the requested fundamental; in partial‑based mode the scaffold
-                // can remain more blended with the original spectrum.
-                float mode_gain = pitch_lock_mode_ ? 0.9f : 1.0f;
+                // Mode‑dependent scaffold strength: in pitch‑locked mode the stack
+                // is allowed to dominate more strongly so the perceived pitch
+                // snaps confidently to the requested fundamental; in partial‑based
+                // mode it remains a bit more blended with the original spectrum.
+                float mode_gain = pitch_lock_mode_ ? 1.5f : 1.0f;
                 for (int h = 1; h <= num_harmonics; ++h)
                 {
                     int k = k0 * h;
                     if (k > static_cast<int>(kNumBins)) break;
                     float amount = (h & 1) ? odd_amount : even_amount;  // odd h -> odd_amount, even h -> even_amount
                     float g = 1.0f + mode_gain * gains[h - 1] * amount;
+                    // Avoid exploding a single bin while still allowing a
+                    // much hotter harmonic scaffold than before.
+                    if (g > 4.0f)
+                        g = 4.0f;
                     spectrum[k].re *= g;
                     spectrum[k].im *= g;
                 }
@@ -676,16 +733,21 @@ struct SimpleResynth
                 // active, regardless of the instantaneous grain energy.
                 float fund_out = sqrtf(spectrum[k0].re * spectrum[k0].re
                                       + spectrum[k0].im * spectrum[k0].im);
-                // Target fundamental: a mix of a fixed synth-like floor
-                // and a fraction of the frame's RMS energy so quiet
-                // inputs still produce a strong bass tone.
-                float target_fund = 0.02f; // baseline "osc" floor
+                // Target fundamental: now significantly more assertive so the
+                // stack behaves more like a dedicated oscillator voice. Mix a
+                // higher fixed floor with a stronger multiple of the frame RMS.
+                float target_fund = 0.08f; // was 0.02f
                 if (last_frame_spectral_energy > 0.0f)
                 {
-                    float from_energy = 0.8f * last_frame_spectral_energy;
+                    float from_energy = 1.5f * last_frame_spectral_energy;
                     if (target_fund < from_energy)
                         target_fund = from_energy;
                 }
+                // Cap the target so extremely hot or pathological frames do not
+                // blow up the stack; tuned by ear in listening tests.
+                const float max_target_fund = 0.35f;
+                if (target_fund > max_target_fund)
+                    target_fund = max_target_fund;
                 if (target_fund > 0.0f && fund_out < target_fund)
                 {
                     float needed = target_fund - fund_out;
@@ -734,19 +796,20 @@ struct SimpleResynth
                     prev_mag = out_mag;
                 }
 
-                // Gentle harmonic focusing: when V/OCT is active, softly
-                // de‑emphasise bins that sit far from integer multiples of
-                // the fundamental so that most of the spectral energy falls
-                // into the harmonic families selected by COLOR. This is kept
-                // conservative so noisy / inharmonic content still reads
-                // through the cloud.
-                const float base_focus = 0.35f;
+                // Harmonic focusing: when V/OCT is active, de‑emphasise bins
+                // that sit far from integer multiples of the fundamental so
+                // that most of the spectral energy falls into the harmonic
+                // families selected by COLOR. This version is intentionally
+                // stronger (sharper "comb") so the harmonic stack reads more
+                // clearly as a pitched voice while still leaving some room
+                // for in‑between / noisy content.
+                const float base_focus = 0.7f; // was 0.35f
                 if (k0 > 0 && base_focus > 0.0f)
                 {
-                    float focus = pitch_lock_mode_ ? (base_focus * 1.2f)
+                    float focus = pitch_lock_mode_ ? (base_focus * 1.3f)
                                                    : base_focus;
-                    if (focus > 0.8f)
-                        focus = 0.8f;
+                    if (focus > 0.9f)
+                        focus = 0.9f;
 
                     for (size_t k = 1; k <= kNumBins; ++k)
                     {
@@ -755,7 +818,16 @@ struct SimpleResynth
                         if (h < 1.0f || h > static_cast<float>(num_harmonics))
                             continue;
                         float dist = fabsf(r - h); // 0 at harmonic, 0.5 halfway
-                        float keep = 1.0f - focus * fminf(dist * 2.0f, 1.0f);
+                        float norm = fminf(dist * 2.0f, 1.0f); // 0..1
+                        // Squared falloff: bins further from harmonics are hit
+                        // harder than before, concentrating more energy onto
+                        // the harmonic lines.
+                        float keep = 1.0f - focus * (norm * norm);
+                        // Never fully remove off‑harmonic content; keep a
+                        // small floor so noisy material still reads through.
+                        const float keep_floor = 0.15f;
+                        if (keep < keep_floor)
+                            keep = keep_floor;
                         spectrum[k].re *= keep;
                         spectrum[k].im *= keep;
                     }
@@ -765,14 +837,21 @@ struct SimpleResynth
                 // grain spectrum, rein in overall level if necessary so
                 // the combined result stays loud but does not explode in
                 // level. Compare energy before and after a hypothetical
-                // scaling and clamp the increase.
+                // scaling and clamp the increase. In V/OCT‑driven cases
+                // we allow a significantly higher increase so the stack
+                // can dominate; in other cases we keep the older, more
+                // conservative limit.
                 float energy_after = 0.0f;
                 for(size_t k = 0; k <= kNumBins; ++k)
                     energy_after += spectrum[k].re * spectrum[k].re
                                     + spectrum[k].im * spectrum[k].im;
                 if(energy_after > 0.0f && pre_sum_sq > 0.0f)
                 {
-                    float max_ratio = 4.0f; // allow up to +12 dB over shaping stage
+                    // When a valid fundamental is present, treat the engine as
+                    // a more explicit oscillator voice and allow the harmonic
+                    // stack to rise much further above the pre‑shaping energy.
+                    float max_ratio = (fundamental_hz_ > 0.0f) ? 16.0f   // ~+24 dB
+                                                              : 4.0f;  // ~+12 dB
                     float ratio     = energy_after / pre_sum_sq;
                     if(ratio > max_ratio)
                     {

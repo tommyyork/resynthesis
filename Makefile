@@ -54,7 +54,7 @@ program-dfu:
 INKSCAPE ?= inkscape
 PANEL_OUTPUT_DIR := panel/output
 
-.PHONY: panel svg tests samples test_resynth_props test_panel test_voct resynthesis-clean clean
+.PHONY: panel svg tests samples fluff test_resynth_props test_panel test_voct resynthesis-clean clean
 
 # High-level panel target:
 # 1. Regenerate the canonical ResynthesisPanel.svg from the generator script.
@@ -115,6 +115,12 @@ test_panel:
 # generate WAVs under test/out/ for subjective evaluation.
 samples:
 	$(MAKE) -C test samples
+
+# FLUFF-only renders: run just the FLUFF offline sample-processing program,
+# generating WAVs under test/out/fluff/ for subjective evaluation.
+.PHONY: fluff
+fluff:
+	$(MAKE) -C test fluff
 
 # V/OCT harmonic analysis: OneShotOneOsc.wav -> test/out/voct_harmonic/*.csv, *.svg
 test_voct:

@@ -182,11 +182,12 @@ static bool process_one_file_with_fluff(const char* inputPath)
     }
 
     float drywet = 1.0f; // 100% wet: hear resynth only
-    // Use assertive defaults for smoothing/flatten/tilt, but keep sparsity and
-    // diffusion near minimum so FLUFF is the main driver of texture.
+    // Use smoother dynamics but keep the FLUFF stages as the main driver of
+    // texture. Flattening and tilt are kept moderate/neutral here so the
+    // renders do not sound implicitly high‑passed or overly bright.
     resynth.SetSmoothing(0.8f);        // heavy magnitude smoothing
-    resynth.SetSpectralFlatten(0.65f); // strongly whiten / flatten spectrum
-    resynth.SetBrightDark(0.45f);      // noticeably bright tilt
+    resynth.SetSpectralFlatten(0.25f); // gentle whitening, preserve low‑end weight
+    resynth.SetBrightDark(0.0f);       // neutral tilt (no added brightness)
     resynth.SetSparsity(0.05f);        // minimal spectral carving by default
     resynth.SetPhaseDiffusion(0.05f);  // very low phase diffusion; FLUFF adds more
     // Exercise the partial‑based / spectral‑model mode used when B_8 is ON.
