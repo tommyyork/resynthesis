@@ -1,0 +1,10 @@
+test_resynth_offline
+test_resynth_cv_sweeps
+test_resynth_voct
+*_resynth_processed.wav
+out/
+
+# Additional host test binaries
+test_resynth_fluff
+test_resynth_harmonic
+test_resynth_props
