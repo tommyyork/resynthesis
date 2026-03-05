@@ -1590,11 +1590,11 @@ def test_knob_labels_not_obscured_by_rogan_knobs() -> None:
 
     knob_r = ROGAN_KNOB_DIAMETER_MM / 2.0 + ROGAN_LABEL_CLEARANCE_MM
 
-    # Only check primary pot labels (one per knob). BRIGHT / DARK is split into two lines; "BRIGHT /" is the primary.
+    # Only check primary pot labels (one per knob). COLOR is the primary label on the top-right pot.
     pot_texts = [
         t
         for t in texts
-        if t.text in ("DRY / WET", "SMOOTH", "FLUFF", "BRIGHT /")
+        if t.text in ("OFFER", "TIMESTRETCH", "FLUFF", "COLOR")
     ]
     assert pot_texts, "No pot labels found to validate."
 

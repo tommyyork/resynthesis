@@ -391,7 +391,7 @@ $SCREW_SLOTS
 
   <!-- Labels beneath pots row 1 (y >= 26.5), font 3.6 mm (>= 10 pt); clear of 12mm knob -->
   <text x="11.176" y="33" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">OFFER</text>
-  <text x="39.65" y="33" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">SMOOTH</text>
+  <text x="39.65" y="33" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">TIMESTRETCH</text>
 
   <!-- Labels beneath pots row 2 (y >= 45.6); clear of knob. CV_3 labeled FLUFF, CV_4 labeled COLOR -->
   <text x="11.176" y="52" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">FLUFF</text>
@@ -455,12 +455,9 @@ $SCREW_SLOTS
   <text x="31.483" y="79.0" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">B5</text>
   <text x="43.65" y="79.0" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">B6</text>
 
-  <!-- Middle row (y=98.312) – V/OCT, italic t (TIME), SPARSITY, italic d (diffusion) -->
+  <!-- Middle row (y=98.312) – V/OCT, SMOOTH, SPARSITY, italic d (diffusion) -->
   <text x="7.15" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">V/OCT</text>
-  <text x="19.317" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle"
-        fill="#ffffff"
-        font-family="DIN 2014, Gidole, 'DIN Alternate', sans-serif"
-        font-style="italic">t</text>
+  <text x="19.317" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">SMOOTH</text>
   <text x="31.483" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">SPARSITY</text>
   <text x="43.65" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle"
         fill="#ffffff"

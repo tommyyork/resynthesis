@@ -1,6 +1,6 @@
 # Resynthesis
 
-This example implements a phase-vocoder-style resynthesis effect for Daisy Patch SM, inspired by the Resynthesis.hpp code from the All Electric Smart Grid project. This is maybe 80% GPT, 20% human, so buyer beware if you fork this or use this code. 
+This example implements a phase-vocoder-style resynthesis effect for Daisy Patch SM, inspired by the Resynthesis.hpp code from the All Electric Smart Grid project. This is maybe 80% GPT, 20% human, so buyer beware if you fork this or use this code.
 
 Incoming audio is analyzed into overlapping FFT grains, processed spectrally (phase propagation, V/OCT pitch, spectral flattening, bright/dark tilt, sparsity, and phase diffusion), and resynthesized with overlap-add back to the output. The V/OCT input (0–10 V) sets the fundamental frequency so the module can be used as an oscillator in a bass patch.
 
@@ -34,8 +34,8 @@ This section is the **source of truth for panel labels and control behaviour**. 
   Combined send and mix control for the resynthesis engine. **Fully CCW**, the output is **purely dry input** (non‑pitch‑shifted), and the engine effectively stops seeding new grains, so if no grains are currently active you hear a clean bypass. As you turn toward **12 o’clock**, the input is increasingly **“offered” to the grain engine** while a crossfade brings in the wet signal; around noon you get roughly **half dry, half wet** with the input actively feeding grains. **Fully CW** behaves like a **full send into the resynth path** so the output is dominated by loud, fully wet grains.  
   When **`V/OCT` is patched**, OFFER additionally becomes a **“pitch crossfade”**: CCW you hear the original, unshifted input; CW you hear a **clearly pitched, harmonically focused granular reconstruction** whose fundamental and partials follow the V/OCT voltage and **COLOR** setting, with most of the grain energy collapsing onto those harmonic families. Sweeping OFFER from CCW → CW in this case moves smoothly from dry, unshifted audio into the **fully pitch‑shifted, harmonically reinforced voice**, while existing grains are still allowed to **decay naturally** when you come back toward CCW.
 
-- **CV_2 – Magnitude Smoothing (panel: `SMOOTH`)**
-  Controls how quickly spectral magnitudes follow the input. **Low** values track transients closely (crisp, articulate); **high** values smear dynamics into a pad‑like magnitude envelope. The engine’s **default** smoothing is around **0.4**, which tested as a good compromise between transient clarity and sustained “pad” character.
+- **CV_2 – Time‑Stretch / Grain Density (panel: `TIMESTRETCH`)**
+  Bipolar control around 1× time. This knob controls how quickly grains are launched relative to the analysis hop: **left of centre** slows down and smears the audio into super‑slow, cloud‑like textures, while **right of centre** increases grain density and motion up into fast, chattery clusters. The mapping mirrors the TIME CV input so that the **0 V / noon region** covers the most musically useful 0.25×–4× range, with more extreme slow/fast behaviour toward the ends of travel.
 
 - **CV_3 – FLUFF – granular cloud depth (panel: `FLUFF`)**  
   Sequentially enables a set of increasingly strong “cloud” behaviours in the grains. **Fully CCW** gives the most subtle, stable sound. As you turn clockwise, the engine adds:  
@@ -48,7 +48,7 @@ This section is the **source of truth for panel labels and control behaviour**. 
 - **CV_4 – Color – bright/dark tilt & harmonic character (panel: `COLOR`)**  
   Two roles:
   - **Spectral tilt:** Negative values darken (emphasize low bins), positive values brighten (emphasize high bins); tilt gain is clamped so extremes do not clip or go silent.  
-  - **Harmonic character in both modes:** When V/OCT is in use, **Color** selects which harmonic family is reinforced in **both** pitch‑locked and partial‑based modes. **Fully CCW** → even harmonics (2nd, 4th, 6th); **fully CW** → odd harmonics (fundamental, 3rd, 5th). In pitch‑locked mode the scaffold is gentler so the pitched grains stay dominant; in partial‑based mode the scaffold is more forward so simple inputs behave like a full synth voice. Reinforced partials use moderate gains so they **blend with the resynthesized body**.
+  - **Harmonic character in both modes (when `V/OCT` is patched):** **Color** selects which harmonic family is reinforced in **both** pitch‑locked and partial‑based modes using a **12‑harmonic scaffold** built on the V/OCT fundamental. **Fully CCW** emphasises the **even harmonics** \(2nd, 4th, 6th, … up to 12th\); **fully CW** emphasises the **odd harmonics** \(fundamental, 3rd, 5th, … up to 11th\). Power is **front‑loaded into the low harmonics** and then tapered so that roughly the first four harmonics carry most of the added energy and higher harmonics contribute a progressively smaller, more textural sheen. In pitch‑locked mode the scaffold is gentler so the pitched grains stay dominant; in partial‑based mode the scaffold is more forward so simple inputs behave like a full synth voice. Reinforced partials use moderate, tapered gains so they **blend with the resynthesized body** rather than sounding like separate oscillators.
 
 ### Toggles (B_7, B_8)
 
@@ -67,7 +67,7 @@ This section is the **source of truth for panel labels and control behaviour**. 
 
 The middle jack row (panel labels above the jacks) is:
 
-- `V/OCT`, *`t`* (TIME), `SPARSITY`, *`D`* (diffusion)
+- `V/OCT`, `SMOOTH`, `SPARSITY`, *`D`* (diffusion)
 
 Mapped controls:
 
@@ -75,8 +75,8 @@ Mapped controls:
   Volt‑per‑octave pitch control. In both modes the algorithm resynthesizes the input around a musical fundamental set by this voltage (e.g. 1 V ≈ 32.7 Hz / C1, 2 V ≈ 65.4 Hz / C2). In **pitch‑locked mode** (B_8 on) the *entire grain spectrum* is pitch‑shifted to follow V/OCT and then gently reinforced by the harmonic scaffold; in **partial‑based mode** (B_8 off) the original spectrum stays nearer its analyzed pitch while a more forward harmonic scaffold (fundamental + harmonics) is overlaid at the V/OCT frequency.  
   With V/OCT active and OFFER turned up, the engine now **focuses most of the spectral energy into the fundamental and harmonics implied by V/OCT and COLOR** so the result is a **grainy but clearly pitched voice** rather than a diffuse, purely formant‑style texture. 0 V = C0 (~16.35 Hz); 10 V is internally clamped near the upper range.
 
-- **CV_6 – Time‑Stretch / Grain Density (panel: italic `t`, bipolar, -5 V to +5 V)**  
-  Bipolar control around 1× time. On the panel this appears as a **lower‑case italic `t`**; in code, tests, and the rest of the documentation it is still referred to as **TIME**. Negative voltages slow down and smear the audio (down to roughly 0.25×), positive voltages increase grain density and motion (up to roughly 4×).
+- **CV_6 – Magnitude Smoothing (panel: `SMOOTH`, bipolar, -5 V to +5 V)**  
+  Controls how quickly spectral magnitudes follow the input. **Low** voltages track transients closely (crisp, articulate); **high** voltages smear dynamics into a pad‑like magnitude envelope. The engine’s **default** smoothing is now around **0.2**, which keeps transients present while still allowing the adaptive smoothing stages to build a stable, cloud‑like body at higher settings.
 
 - **CV_7 – Spectral Sparsity (panel: `SPARSITY`, bipolar, -5 V to +5 V)**  
   Bipolar control mapped to the full **0–1** sparsity range (0 V ≈ 0.5). Lower values keep most bins active and sound fuller; higher values keep only the strongest bins, leading to more pronounced, metallic / ring‑mod‑like spectra, with internal energy preservation so results stay present rather than simply “thin”.
@@ -141,7 +141,7 @@ The table below ties together the **Resynthesis panel labels**, the **Patch.Init
 | B5 (gate out 1)     | B5                     | S_JACK                  | 6.2               | 154.584    | 125.316    | J_GATEOUT1           | `S_JACK.kicad_mod`                  |
 | B6 (gate out 2)     | B6                     | S_JACK                  | 6.2               | 166.751    | 125.316    | J_GATEOUT2           | `S_JACK.kicad_mod`                  |
 | V/OCT               | CV_5                   | S_JACK                  | 6.2               | 130.251    | 139.065    | J_CV1                | `S_JACK.kicad_mod`                  |
-| t (TIME)            | CV_6                   | S_JACK                  | 6.2               | 142.418    | 139.065    | J_CV2                | `S_JACK.kicad_mod`                  |
+| SMOOTH              | CV_6                   | S_JACK                  | 6.2               | 142.418    | 139.065    | J_CV2                | `S_JACK.kicad_mod`                  |
 | SPARSITY            | CV_7                   | S_JACK                  | 6.2               | 154.584    | 139.065    | J_CV3                | `S_JACK.kicad_mod`                  |
 | D (diffusion)       | CV_8                   | S_JACK                  | 6.2               | 166.751    | 139.065    | J_CV4                | `S_JACK.kicad_mod`                  |
 | IN L                | IN_L / B4              | S_JACK                  | 6.2               | 130.251    | 152.654    | J_LIN1               | `S_JACK.kicad_mod`                  |
@@ -248,11 +248,11 @@ External mechanical references and design rules:
 
 6. **Run CV parameter sweep renders (optional)**:
    - **Purpose:** For each CV parameter, process the input with that parameter swept across a **musical range of timbres** while the others sit at a slightly bright, low‑sparsity, low‑diffusion “glassy” neutral. Dry/wet is swept 0% → 100% wet **only** in the first test; all other sweeps run at 100% wet. **Default V/OCT is 2 V (C2)** for all sweeps except the V/OCT test. The V/OCT sweep (CV_5) now uses the **sample itself as input** and is **quantized over three octaves (1 V→4 V)** so you hear clear note steps instead of a pure glide. Each set of sweeps is rendered **twice**: once in **pitch‑locked mode** and once in the **partial‑based / spectral‑model mode**. **Four output directories** are used:
-     - **`test/out/cv_sweep/`** — CV sweeps **without** MAX COMP in **pitch‑locked mode** (equivalent to **B_7 off** on hardware). One file per parameter per sample: `<basename>_cv1_offer_feed.wav`, `<basename>_cv2_smoothing.wav`, … `<basename>_cv8_phase_diffusion.wav`.
+     - **`test/out/cv_sweep/`** — CV sweeps **without** MAX COMP in **pitch‑locked mode** (equivalent to **B_7 off** on hardware). One file per parameter per sample: `<basename>_cv1_offer_feed.wav`, `<basename>_cv2_timestretch.wav`, … `<basename>_cv8_phase_diffusion.wav`.
      - **`test/out/cv_sweep_maxcomp/`** — Same sweeps **with** MAX COMP in **pitch‑locked mode** (equivalent to **B_7 on**); each output is checked to have average level **> -60 dBFS**.
      - **`test/out/cv_sweep_partial/`** — CV sweeps **without** MAX COMP in **partial‑based / spectral‑model mode**.
      - **`test/out/cv_sweep_maxcomp_partial/`** — CV sweeps **with** MAX COMP in **partial‑based / spectral‑model mode**.
-   - **Samples:** Same as the offline test: **every 48 kHz WAV** in `test/samples/` is processed (e.g. `chromaplane.wav`, `dryseq.wav`). Output names: **`<basename>_cv1_offer_feed.wav`**, **`<basename>_cv2_smoothing.wav`**, **`<basename>_cv3_flatten.wav`**, **`<basename>_cv4_tilt.wav`**, **`<basename>_cv5_voct.wav`** (V/OCT 1 V→4 V over 30 s, sample‑driven and quantized over three octaves), **`<basename>_cv6_timestretch.wav`**, **`<basename>_cv7_sparsity.wav`**, **`<basename>_cv8_phase_diffusion.wav`**. Across the full set of sweeps and both modes, the rendered WAVs move from **clear, glassy resynth tones** at low settings into **harmonically rich, formant‑heavy and cloud‑like textures** at the high end.
+   - **Samples:** Same as the offline test: **every 48 kHz WAV** in `test/samples/` is processed (e.g. `chromaplane.wav`, `dryseq.wav`). Output names: **`<basename>_cv1_offer_feed.wav`**, **`<basename>_cv2_timestretch.wav`**, **`<basename>_cv3_flatten.wav`**, **`<basename>_cv4_tilt.wav`**, **`<basename>_cv5_voct.wav`** (V/OCT 1 V→4 V over 30 s, sample‑driven and quantized over three octaves), **`<basename>_cv6_smoothing.wav`**, **`<basename>_cv7_sparsity.wav`**, **`<basename>_cv8_phase_diffusion.wav`**. Across the full set of sweeps and both modes, the rendered WAVs move from **clear, glassy resynth tones** at low settings into **harmonically rich, formant‑heavy and cloud‑like textures** at the high end.
   - From the Resynthesis root:
   ```bash
   make samples
@@ -276,7 +276,7 @@ External mechanical references and design rules:
 
 ## Design notes for recent DSP changes
 
-- **Smoothing ≈ 0.4 for musicality**: Early versions used ~0.3 as a neutral smoothing value. Listening tests with bells and broadband material showed that slightly higher smoothing (~0.4) better balances transient clarity with sustained “pad” character, making the effect feel more musical and less brittle when driven hard.
+- **Smoothing ≈ 0.2 for musicality**: Early versions used ~0.3–0.4 as a neutral smoothing value. After refining the adaptive smoothing curves and loudness compensation, a **lower base smoothing (~0.2)** keeps transients clearer while the activity‑dependent smoothing still builds a stable, pad‑like envelope at higher knob and CV settings. This makes the effect feel more open and less smeared at default, while still reaching glassy extremes when desired.
 - **Sparsity and diffusion back to 0–1 (with safeguards)**: The bipolar -5 V..+5 V range now maps to **0–1** for both sparsity and phase diffusion (0 V ≈ 0.5), restoring strong ring‑mod / frequency‑shift‑like metallic effects when desired. Spectral‑energy preservation, grain normalization, and tilt‑gain clamping keep these extremes loud and present rather than simply “thin” or silent.
 - **Tilt gain clamping**: The bright/dark tilt originally allowed very large boosts/cuts at the top and bottom of the spectrum, which in practice caused clipping or near‑silence in edge cases (e.g. the `church_bells_cv4_tilt.wav` sweep). Internally, tilt gain is now clamped to a moderate range so full‑scale CV sweeps remain usable while still clearly changing timbre.
 - **Spectral energy preservation**: After flatten/tilt/sparsity have been applied in the spectral domain, the total energy is renormalized to closely match the pre‑shaping energy. This reduces level jumps when turning controls and makes the resynth output easier to mix.

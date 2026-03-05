@@ -76,11 +76,11 @@ struct CvSweepTest {
 
 static const CvSweepTest kCvTests[] = {
     { "cv1_offer_feed",     "OFFER send+mix: 0% dry (unshifted) -> 100% pitched granular/harmonic voice over full sample when V/OCT is active" },
-    { "cv2_smoothing",      "Magnitude smoothing 0.10 -> 0.95 over full sample (clear transients -> glassy pads)" },
+    { "cv2_timestretch",    "Time stretch 0.5x -> 4x over full sample (avoids too-few-grains near-silence)" },
     { "cv3_flatten",        "Spectral flatten 0.10 -> 1 over full sample (original spectrum -> whitened / formant-rich)" },
     { "cv4_tilt",           "Bright/dark tilt -1 -> 1 over full sample (even vs odd harmonic emphasis via the harmonic scaffold in both modes)" },
     { "cv5_voct",           "V/OCT sweep 1 V -> 4 V over full sample (sample-driven, quantized over 3 octaves)" },
-    { "cv6_timestretch",    "Time stretch 0.5x -> 4x over full sample (avoids too-few-grains near-silence)" },
+    { "cv6_smoothing",      "Magnitude smoothing 0.10 -> 0.95 over full sample (clear transients -> glassy pads)" },
     { "cv7_sparsity",       "Spectral sparsity 0 -> 0.9 over full sample (ring-mod / formant-like at high end)" },
     { "cv8_phase_diffusion","Phase diffusion 0 -> 1 over full sample (clear to noisy/metallic)" },
 };
@@ -240,7 +240,7 @@ static bool run_one_cv_test(
         // Neutral "glassy" defaults; override the one under test. Default V/OCT = 2 V (C2).
         // Dry/wet 100% wet for sweeps 2–8 so the parameter under test is heard clearly.
         float drywet = 1.0f;
-        float smoothing = 0.35f;       // slightly fast smoothing for clear attacks
+        float smoothing = 0.20f;       // default smoothing now matches firmware neutral
         float flatten = 0.15f;         // mostly original spectral shape
         float tilt = 0.1f;             // gently bright by default
         float fundamental_hz = VoctVoltsToFundamentalHz(2.0f);  // 2 V = C2 (~65.4 Hz)
@@ -264,7 +264,40 @@ static bool run_one_cv_test(
 
         switch (cv_index) {
             case 0: drywet = t; break;  // CV1 sweep: 0% -> 100% wet
-            case 1: smoothing = 0.10f + t * 0.85f; break;  // 0.10 -> 0.95 (clear transients -> glassy pads)
+            case 1: {
+                // CV2 "timestretch": reuse the firmware mapping so rendered sweeps
+                // match hardware behaviour (normal range near -1 V..+1 V, more
+                // extreme slow/fast regions toward ±5 V).
+                float v = -1.0f + 2.0f * t; // sweep -1..1
+                const float center_band = 0.2f;
+                if(v >= -center_band && v <= center_band)
+                {
+                    float e = v / center_band; // -1..1
+                    float shaped = (e >= 0.0f) ? powf(e, 0.5f) : -powf(-e, 0.5f);
+                    time_scale = powf(2.0f, shaped * 3.0f); // ~0.125x..8x within ±1 V
+                }
+                else if(v < -center_band)
+                {
+                    float tt = (v + 1.0f) / (1.0f - center_band); // v=-1 ->0, v=-0.2->1
+                    if(tt < 0.0f) tt = 0.0f;
+                    if(tt > 1.0f) tt = 1.0f;
+                    const float min_extreme = 0.03125f; // 1/32x
+                    const float min_normal  = 0.125f;
+                    float ratio = min_normal / min_extreme;
+                    time_scale = min_extreme * powf(ratio, tt);
+                }
+                else
+                {
+                    float tt = (v - center_band) / (1.0f - center_band); // v=0.2->0, v=1->1
+                    if(tt < 0.0f) tt = 0.0f;
+                    if(tt > 1.0f) tt = 1.0f;
+                    const float max_normal   = 8.0f;
+                    const float max_extreme  = 12.0f;
+                    float ratio = max_extreme / max_normal;
+                    time_scale  = max_normal * powf(ratio, tt);
+                }
+                break;
+            }
             // CV3 "flatten" interpreted as a bipolar -5 V..+5 V: keep
             // the current neutral value for the entire negative half
             // (-5 V..0 V), then increase from there for 0..+5 V.
@@ -314,38 +347,7 @@ static bool run_one_cv_test(
                 fundamental_hz = VoctVoltsToFundamentalHz(voct_volts);
                 break;
             }
-            // CV6 "timestretch": mirror the firmware mapping so that:
-            // - The "normal" engine behaviour sits in the -1 V..+1 V band.
-            // - -5 V is even slower than before.
-            // - +1 V..+5 V quickly approach the longest feasible stretch.
-            case 5: {
-                float x = 2.0f * t - 1.0f; // -1..1
-                const float center_band = 0.2f; // ±1 V
-                if (x >= -center_band && x <= center_band) {
-                    // Compressed "normal" behaviour in -1 V..+1 V
-                    float e = x / center_band; // -1..1
-                    float shaped = (e >= 0.0f) ? powf(e, 0.5f)
-                                               : -powf(-e, 0.5f);
-                    time_scale = powf(2.0f, shaped * 3.0f); // ~0.125x..8x
-                } else if (x < -center_band) {
-                    float u = (x + 1.0f) / (1.0f - center_band); // x=-1->0, x=-0.2->1
-                    if (u < 0.0f) u = 0.0f;
-                    if (u > 1.0f) u = 1.0f;
-                    const float min_extreme = 0.03125f;
-                    const float min_normal  = 0.125f;
-                    float ratio = min_normal / min_extreme;
-                    time_scale  = min_extreme * powf(ratio, u);
-                } else {
-                    float u = (x - center_band) / (1.0f - center_band); // x=0.2->0, x=1->1
-                    if (u < 0.0f) u = 0.0f;
-                    if (u > 1.0f) u = 1.0f;
-                    const float max_normal  = 8.0f;
-                    const float max_extreme = 12.0f;
-                    float ratio = max_extreme / max_normal;
-                    time_scale  = max_normal * powf(ratio, u);
-                }
-                break;
-            }
+            case 5: smoothing = 0.10f + t * 0.85f; break;  // CV6 smoothing: 0.10 -> 0.95 (clear transients -> glassy pads)
             case 6: sparsity = t; break;          // 0 -> 1 (full spectrum -> very sparse, formant-like clusters)
             case 7:
                 phase_diffusion = t;             // 0..1 sweep (coherent -> noisy / diffused)

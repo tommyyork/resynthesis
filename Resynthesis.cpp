@@ -206,11 +206,11 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     float v8 = patch.GetAdcValue(CV_8);
 
     float drywet_knob   = v1;
-    float smooth_knob   = v2;
+    float time_cv       = v2;
     float fluff_knob    = v3;
     float tilt_knob     = v4;
     float voct_cv       = v5;
-    float time_cv       = v6;
+    float smooth_knob   = v6;
     float sparsity_cv   = v7;
     float diffusion_cv  = v8;
 

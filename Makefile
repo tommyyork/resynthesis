@@ -100,9 +100,9 @@ test_binaries:
 firmware_size: $(BUILD_DIR)/$(TARGET).map
 	$(PYTHON) test/check_firmware_size.py $(BUILD_DIR)/$(TARGET).map
 
-# Automated tests: property checks, V/OCT harmonic tests, panel alignment,
-# and firmware size guard.
-tests: test_resynth_props test_voct panel test_panel firmware_size
+# Automated tests: property checks, V/OCT harmonic tests (via `voct` target),
+# panel alignment, and firmware size guard.
+tests: test_resynth_props voct panel test_panel firmware_size
 
 test_resynth_props:
 	$(MAKE) -C test tests

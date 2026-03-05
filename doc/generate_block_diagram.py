@@ -94,7 +94,7 @@ digraph Resynthesis {
         color = "#bbbbdd";
 
         cv1 [label="CV_1 — OFFER / FEED\\nSend amount + dry/wet\\nCCW: dry, unshifted input\\nCW: pitched, granular voice\\nwhen V/OCT is patched" shape=rect fillcolor="#fff7e6"];
-        cv2 [label="CV_2 — Magnitude smoothing (SMOOTH)\\nLow: crisp, fast tracking\\nHigh: smeared, pad‑like\\nmagnitude envelope" shape=rect fillcolor="#fff7e6"];
+        cv2 [label="CV_2 — Time‑stretch / density (TIMESTRETCH)\\nLeft: slower, smeared clouds\\nRight: denser, faster motion\\naround 1× time" shape=rect fillcolor="#fff7e6"];
         cv3 [label="CV_3 — FLUFF\\nGranular cloud depth:\\nadds diffusion, jitter,\\n& micro‑modulation" shape=rect fillcolor="#fff7e6"];
         cv4 [label="CV_4 — Color (bright/dark)\\nTilt + harmonic family\\nCCW: darker / even partials\\nCW: brighter / odd partials" shape=rect fillcolor="#fff7e6"];
         cv5 [label="CV_5 — V/OCT (0–10 V)\\nSets musical fundamental\\nC0 (0 V) up to high pitches" shape=rect fillcolor="#fff7e6"];
@@ -108,7 +108,7 @@ digraph Resynthesis {
 
     // Control routing to audio path
     cv1 -> grains  [label="Send + dry/wet into\\nresynth grain engine" fontsize=8];
-    cv2 -> spectral [label="Magnitude smoothing" fontsize=8];
+    cv2 -> grains  [label="Time‑stretch / density" fontsize=8];
     cv3 -> spectral [label="FLUFF stages:\\ncloud depth" fontsize=8];
     cv4 -> spectral [label="Bright / dark tilt\\n+ harmonic family" fontsize=8];
     cv5 -> pvoc     [label="V/OCT fundamental" fontsize=8];

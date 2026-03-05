@@ -174,7 +174,7 @@ struct SimpleResynth
             note_template[i] = 0.0f;
         }
         primed = false;
-        mag_smooth_coeff = 0.4f;
+        mag_smooth_coeff = 0.2f;
         pitch_ratio = 1.0f;
         spectral_flatten = 0.0f;
         bright_dark = 0.0f;
@@ -619,10 +619,51 @@ struct SimpleResynth
         }
         else
         {
+            // Determine how aggressively to pitch‑shift this grain. In pitch‑locked
+            // mode we analyse the current spectrum to estimate its dominant pitch
+            // and compute a frame‑local ratio that moves that peak to the requested
+            // fundamental. This makes pitch‑locked operation behave much more like
+            // a conventional oscillator voice that truly follows the V/OCT input.
+            float pitch_ratio_used = 1.0f;
+            if(pitch_lock_mode_ && fundamental_hz_ > 0.0f && sample_rate_ > 0.0f)
+            {
+                // Crude but robust fundamental estimate: take the strongest bin in
+                // the smoothed magnitude spectrum (ignoring DC) and treat that as
+                // the current "note" for this grain.
+                size_t peak_k = 1;
+                float  peak_mag = mag_smooth[1];
+                for(size_t k = 2; k <= kNumBins; ++k)
+                {
+                    if(mag_smooth[k] > peak_mag)
+                    {
+                        peak_mag = mag_smooth[k];
+                        peak_k   = k;
+                    }
+                }
+                float bin_hz = sample_rate_ / static_cast<float>(kFftSize);
+                float input_f = static_cast<float>(peak_k) * bin_hz;
+                if(input_f > 5.0f)
+                {
+                    pitch_ratio_used = fundamental_hz_ / input_f;
+                    // Keep ratios in a musically sane range so pathological spectra
+                    // do not explode; anything outside ±3 octaves is clamped.
+                    if(pitch_ratio_used < 0.125f) pitch_ratio_used = 0.125f;
+                    if(pitch_ratio_used > 8.0f)   pitch_ratio_used = 8.0f;
+                }
+                else
+                {
+                    pitch_ratio_used = 1.0f;
+                }
+            }
+            else if(pitch_lock_mode_)
+            {
+                // Fallback if we do not have a meaningful input pitch estimate.
+                pitch_ratio_used = pitch_ratio;
+            }
+
             // FLUFF stage 3: introduce gentle micro‑pitch jitter per grain in pitch‑locked
             // mode only. This preserves overall tuning while creating a denser, more
             // animated cloud around the target fundamental.
-            float pitch_ratio_used = pitch_lock_mode_ ? pitch_ratio : 1.0f;
             if(pitch_lock_mode_ && active_fluff_stages >= 3)
             {
                 float max_cents = 12.0f
@@ -698,20 +739,21 @@ struct SimpleResynth
                 float even_amount = 1.0f - odd_amount;             // 1 at CCW, 0 at CW
 
                 // Gains taper so partials sit with the resynthesis (harmonically rich but blended).
-                // Slightly stronger than before so that the harmonic scaffold can more
-                // confidently drive the output towards a full-scale Eurorack level.
-                // More assertive harmonic scaffold so the V/OCT‑driven stack reads
-                // clearly as a pitched voice instead of a subtle coloration.
+                // For pitch‑locked operation we lean harder on the lower harmonics so that
+                // the detected fundamental in the voct tests is clearly dominant, while
+                // still allowing higher partials to contribute texture. The scaffold
+                // currently reinforces the first 12 harmonics when V/OCT is active.
                 const float gains[]       = {
-                    1.5f, 1.2f, 1.0f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f
-                }; // h = 1..8
-                const int   num_harmonics = 8;
+                    1.8f, 1.6f, 1.4f, 1.2f,
+                    1.0f, 0.85f, 0.70f, 0.60f,
+                    0.50f, 0.42f, 0.35f, 0.30f
+                }; // h = 1..12
+                const int   num_harmonics = 12;
 
-                // Mode‑dependent scaffold strength: in pitch‑locked mode the stack
-                // is allowed to dominate more strongly so the perceived pitch
-                // snaps confidently to the requested fundamental; in partial‑based
-                // mode it remains a bit more blended with the original spectrum.
-                float mode_gain = pitch_lock_mode_ ? 1.5f : 1.0f;
+                // Mode‑dependent scaffold strength: in pitch‑locked mode the stack can be
+                // substantially more assertive so the perceived pitch snaps confidently
+                // to the requested fundamental; in partial‑based mode it stays blended.
+                float mode_gain = pitch_lock_mode_ ? 2.0f : 1.0f;
                 for (int h = 1; h <= num_harmonics; ++h)
                 {
                     int k = k0 * h;
@@ -733,19 +775,20 @@ struct SimpleResynth
                 // active, regardless of the instantaneous grain energy.
                 float fund_out = sqrtf(spectrum[k0].re * spectrum[k0].re
                                       + spectrum[k0].im * spectrum[k0].im);
-                // Target fundamental: now significantly more assertive so the
-                // stack behaves more like a dedicated oscillator voice. Mix a
-                // higher fixed floor with a stronger multiple of the frame RMS.
-                float target_fund = 0.08f; // was 0.02f
+                // Target fundamental: more assertive so the stack behaves closer to a
+                // dedicated oscillator voice in pitch‑locked mode. Mix a higher fixed
+                // floor with a stronger multiple of the frame RMS so the C2/C3/C4
+                // fundamentals dominate the voct test slice.
+                float target_fund = 0.12f; // base floor
                 if (last_frame_spectral_energy > 0.0f)
                 {
-                    float from_energy = 1.5f * last_frame_spectral_energy;
+                    float from_energy = 2.0f * last_frame_spectral_energy;
                     if (target_fund < from_energy)
                         target_fund = from_energy;
                 }
                 // Cap the target so extremely hot or pathological frames do not
-                // blow up the stack; tuned by ear in listening tests.
-                const float max_target_fund = 0.35f;
+                // blow up the stack; tuned by ear / tests.
+                const float max_target_fund = 0.40f;
                 if (target_fund > max_target_fund)
                     target_fund = max_target_fund;
                 if (target_fund > 0.0f && fund_out < target_fund)
@@ -803,13 +846,13 @@ struct SimpleResynth
                 // stronger (sharper "comb") so the harmonic stack reads more
                 // clearly as a pitched voice while still leaving some room
                 // for in‑between / noisy content.
-                const float base_focus = 0.7f; // was 0.35f
+                const float base_focus = 0.85f; // stronger than before for clearer harmonics
                 if (k0 > 0 && base_focus > 0.0f)
                 {
-                    float focus = pitch_lock_mode_ ? (base_focus * 1.3f)
+                    float focus = pitch_lock_mode_ ? (base_focus * 1.4f)
                                                    : base_focus;
-                    if (focus > 0.9f)
-                        focus = 0.9f;
+                    if (focus > 0.95f)
+                        focus = 0.95f;
 
                     for (size_t k = 1; k <= kNumBins; ++k)
                     {
@@ -819,13 +862,11 @@ struct SimpleResynth
                             continue;
                         float dist = fabsf(r - h); // 0 at harmonic, 0.5 halfway
                         float norm = fminf(dist * 2.0f, 1.0f); // 0..1
-                        // Squared falloff: bins further from harmonics are hit
-                        // harder than before, concentrating more energy onto
-                        // the harmonic lines.
+                        // Squared falloff with a small floor: bins further from harmonics
+                        // are hit hard so most energy falls onto harmonic lines, but a
+                        // small residue keeps noisy material audible.
                         float keep = 1.0f - focus * (norm * norm);
-                        // Never fully remove off‑harmonic content; keep a
-                        // small floor so noisy material still reads through.
-                        const float keep_floor = 0.15f;
+                        const float keep_floor = 0.08f;
                         if (keep < keep_floor)
                             keep = keep_floor;
                         spectrum[k].re *= keep;
@@ -849,9 +890,11 @@ struct SimpleResynth
                 {
                     // When a valid fundamental is present, treat the engine as
                     // a more explicit oscillator voice and allow the harmonic
-                    // stack to rise much further above the pre‑shaping energy.
-                    float max_ratio = (fundamental_hz_ > 0.0f) ? 16.0f   // ~+24 dB
-                                                              : 4.0f;  // ~+12 dB
+                    // stack to rise substantially above the pre‑shaping energy
+                    // in pitch‑locked mode so the target note really wins.
+                    float max_ratio = (fundamental_hz_ > 0.0f)
+                                          ? (pitch_lock_mode_ ? 32.0f : 16.0f)  // up to ~+30 dB
+                                          : 4.0f;                                // ~+12 dB
                     float ratio     = energy_after / pre_sum_sq;
                     if(ratio > max_ratio)
                     {
