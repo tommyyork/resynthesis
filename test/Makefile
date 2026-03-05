@@ -1,6 +1,6 @@
 # Offline test for phase vocoder resynthesis (host build)
 CXX = g++
-CXXFLAGS         = -std=c++14 -O2 -Wall -I..
+CXXFLAGS         = -std=c++14 -O2 -Wall -I.. -I../DaisySP/Source -I../DaisySP/Source/Utility
 TARGET           = test_resynth_offline
 TARGET_CV        = test_resynth_cv_sweeps
 TARGET_FLUFF     = test_resynth_fluff
@@ -34,7 +34,9 @@ $(TARGET_PROPS): $(SRCS_PROPS)
 	$(CXX) $(CXXFLAGS) -o $(TARGET_PROPS) $(SRCS_PROPS)
 
 $(TARGET_VOCT): $(SRCS_VOCT)
-	$(CXX) $(CXXFLAGS) -o $(TARGET_VOCT) $(SRCS_VOCT)
+	$(CXX) $(CXXFLAGS) -o $(TARGET_VOCT) $(SRCS_VOCT) \
+		../DaisySP/Source/Filters/svf.cpp \
+		../DaisySP/Source/Control/phasor.cpp
 
 # V/OCT sweep: all WAVs in samples/ -> out/voct_sweep/{basename}_voct_sweep.wav
 run: $(TARGET)

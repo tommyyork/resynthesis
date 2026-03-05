@@ -13,6 +13,7 @@
 #include "daisysp.h"
 #include "ResynthEngine.h"
 #include "Compression.h"
+#include "Shifting.h"
 #include "ResynthParams.h"
 
 #include <cmath>
@@ -61,6 +62,8 @@ Switch     max_comp_switch;
 
 static SimpleResynth resynth;
 static Grain         grains[kNumGrains];
+static resynth_shifting::Shifting shifting_block;
+static Svf                    input_hp;
 
 // Input history ring buffer for analysis
 static float  input_history[kFftSize];
@@ -247,6 +250,29 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     resynth.SetFundamentalHz(fundamental_hz, patch.AudioSampleRate());
     // In hardware, B_8 OFF = pitch‑locked grains; B_8 ON = partial‑based model.
     resynth.SetPitchLockMode(pitch_lock_on);
+    // Shifting front‑end: treat pitch‑lock as the condition under which the
+    // input is snapped onto the V/OCT fundamental (or its frequency‑shifted
+    // variant) before any further processing. COLOR controls crossfade between
+    // pure pitch shifting and a Bode‑style frequency shifter near the top of
+    // its range, while the target shift is always derived from V/OCT.
+    shifting_block.SetPitchLockEnabled(pitch_lock_on);
+    shifting_block.SetColor(fmap(tilt_knob, 0.0f, 1.0f));
+    shifting_block.SetVoctFundamental(fundamental_hz);
+
+    // When pitch lock is enabled, apply a two‑pole high‑pass filter whose
+    // cutoff tracks just below the target fundamental implied by V/OCT.
+    // This keeps DC and sub‑fundamental rumble out of the subsequent
+    // pitch/frequency shifting and resynthesis stages while preserving
+    // the perceived note.
+    bool  hp_enabled   = pitch_lock_on && fundamental_hz > 0.0f;
+    float hp_cutoff_hz = 0.9f * fundamental_hz; // just below the target note
+    if(hp_cutoff_hz < 10.0f)
+        hp_cutoff_hz = 10.0f;
+    float hp_max = audio_sample_rate / 3.0f;
+    if(hp_cutoff_hz > hp_max)
+        hp_cutoff_hz = hp_max;
+    if(hp_enabled)
+        input_hp.SetFreq(hp_cutoff_hz);
 
     // Normalize time/sparsity/diffusion (CV_6–CV_8) to bipolar -1..1 for -5 V .. +5 V
     float time_bi      = CvToBipolar(time_cv);
@@ -396,6 +422,20 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         float inL  = IN_L[i];
         float inR  = IN_R[i];
         float mono = 0.5f * (inL + inR);
+
+        if(hp_enabled)
+        {
+            input_hp.Process(mono);
+            mono = input_hp.High();
+        }
+
+        // Optional front-end pitch/frequency shifting block: when pitch-lock
+        // is enabled, first determine the input's approximate fundamental and
+        // shift it toward the V/OCT target note. COLOR near the top of its
+        // range fades this behaviour into a Bode-style frequency shifter whose
+        // shift rate also follows V/OCT. When pitch-lock is off the block is
+        // effectively bypassed.
+        mono = shifting_block.Process(mono);
 
         // Push into input history ring buffer
         input_history[history_write_pos] = mono;
@@ -648,7 +688,10 @@ int main(void)
     mode_switch.Init(patch.B8);
     max_comp_switch.Init(patch.B7);
     resynth.Init();
-    // plateau.Init(patch.AudioSampleRate());
+    shifting_block.Init(audio_sample_rate);
+    input_hp.Init(audio_sample_rate);
+    input_hp.SetRes(0.1f);
+    input_hp.SetDrive(1.0f);
 
     // Single compressor: defaults to "normal" 2:1; B_7 (MAX COMP) engages a
     // stronger Omnipressor-style setting.

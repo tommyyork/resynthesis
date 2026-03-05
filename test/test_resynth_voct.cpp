@@ -18,6 +18,8 @@
 
 #include "../ResynthEngine.h"
 #include "../ResynthParams.h"
+#include "../Shifting.h"
+#include "daisysp.h"
 #include "wav_io.h"
 #include <cerrno>
 #include <cmath>
@@ -41,6 +43,7 @@ static constexpr unsigned kSampleRate = 48000;
 
 using namespace resynth_engine;
 using namespace resynth_params;
+using namespace daisysp;
 
 // ---- Default parameters (from cv_sweep, non-sweeping defaults) ----
 // For the V/OCT harmonic tests we bias these towards clean, stable,
@@ -470,6 +473,33 @@ static void run_resynth_pass(
     float fundamental_hz = VoctVoltsToFundamentalHz(voct_volts);
     resynth.SetFundamentalHz(fundamental_hz, (float)kSampleRate);
 
+    // Front-end shifting and tracking HPF to mirror the firmware audio path:
+    // when pitch lock is enabled, high-pass just below the target fundamental
+    // and use the Shifting block to move the input toward the V/OCT note
+    // before feeding the phase-vocoder engine.
+    Svf                    input_hp;
+    resynth_shifting::Shifting shifting;
+    input_hp.Init((float)kSampleRate);
+    input_hp.SetRes(0.1f);
+    input_hp.SetDrive(1.0f);
+    shifting.Init((float)kSampleRate);
+    shifting.SetPitchLockEnabled(pitch_lock);
+    // In the voct harmonic test we want pure pitch shifting, not frequency
+    // shifting, so keep COLOR well below the crossfade region used in the
+    // firmware (3 o'clock → CW).
+    shifting.SetColor(0.25f);
+    shifting.SetVoctFundamental(fundamental_hz);
+
+    bool  hp_enabled   = pitch_lock && fundamental_hz > 0.0f;
+    float hp_cutoff_hz = 0.9f * fundamental_hz;
+    if(hp_cutoff_hz < 10.0f)
+        hp_cutoff_hz = 10.0f;
+    float hp_max = (float)kSampleRate / 3.0f;
+    if(hp_cutoff_hz > hp_max)
+        hp_cutoff_hz = hp_max;
+    if(hp_enabled)
+        input_hp.SetFreq(hp_cutoff_hz);
+
     float input_history[kFftSize];
     size_t history_write_pos = 0;
     size_t total_samples_seen = 0;
@@ -488,6 +518,14 @@ static void run_resynth_pass(
     for (size_t i = 0; i < num_frames; ++i)
     {
         float mono_in = mono[i];
+
+        if(hp_enabled)
+        {
+            input_hp.Process(mono_in);
+            mono_in = input_hp.High();
+        }
+
+        mono_in = shifting.Process(mono_in);
         input_history[history_write_pos] = mono_in;
         history_write_pos = (history_write_pos + 1) % kFftSize;
         ++total_samples_seen;
@@ -621,12 +659,9 @@ int main(int argc, char** argv)
     };
     const Config configs[] = {
         { "dry",                    "Dry (passthrough)",                          true,  kVoct0Volts, true  },
-        { "pitchlock_0v",           "Pitch-lock, 0 V V/OCT (C2)",                  true,  kVoct0Volts, false },
-        { "partial_0v",             "Partial mode, 0 V V/OCT (C2)",                 false, kVoct0Volts, false },
-        { "pitchlock_3v",           "Pitch-lock, 3 V V/OCT",                        true,  3.0f,        false },
-        { "pitchlock_4v",           "Pitch-lock, 4 V V/OCT",                        true,  4.0f,        false },
-        { "partial_3v",             "Partial mode, 3 V V/OCT",                     false, 3.0f,        false },
-        { "partial_4v",             "Partial mode, 4 V V/OCT",                     false, 4.0f,        false },
+        { "pitchlock_0v",           "Pitch-lock, 0 V V/OCT (C2)",                 true,  kVoct0Volts, false },
+        { "pitchlock_3v",           "Pitch-lock, 3 V V/OCT",                      true,  3.0f,        false },
+        { "pitchlock_4v",           "Pitch-lock, 4 V V/OCT",                      true,  4.0f,        false },
     };
     const size_t num_configs = sizeof(configs) / sizeof(configs[0]);
 
@@ -819,11 +854,61 @@ int main(int argc, char** argv)
     }
     printf("  stacked -> %s\n", stacked_path);
 
-    // For each configuration, estimate a "suggested note" based on the
-    // strongest note bucket in the 100 ms analysis slice. Also compute
-    // an expected note from the V/OCT setting when applicable, and
-    // print the deviation in semitones so this can later be turned
-    // into an automated test.
+    // Helper: estimate a fundamental MIDI note from per-note magnitude
+    // buckets using a simple harmonic comb. For each candidate MIDI
+    // note in [min_midi, max_midi], accumulate energy at its first few
+    // harmonics (weighted toward lower partials) and pick the MIDI with
+    // the strongest harmonic "explanation". This more closely tracks a
+    // human impression of pitch (fundamental inferred from the harmonic
+    // stack) than simply picking the single loudest note bucket.
+    auto estimate_fundamental_midi = [&](const std::vector<float>& note_mags,
+                                         int                       min_midi_local,
+                                         int                       max_midi_local,
+                                         int&                      out_midi,
+                                         float&                    out_score) {
+        out_midi  = -1;
+        out_score = 0.0f;
+        if(note_mags.empty() || min_midi_local > max_midi_local)
+            return;
+
+        const int   num_notes_local = max_midi_local - min_midi_local + 1;
+        const int   kMaxHarmonics   = 8;
+        // Gentle 1/h taper so the fundamental and first few harmonics
+        // drive the estimate, with higher harmonics contributing but
+        // not dominating.
+        float harm_weights[kMaxHarmonics + 1];
+        for(int h = 1; h <= kMaxHarmonics; ++h)
+            harm_weights[h] = 1.0f / static_cast<float>(h);
+
+        for(int midi = min_midi_local; midi <= max_midi_local; ++midi)
+        {
+            float score = 0.0f;
+            for(int h = 1; h <= kMaxHarmonics; ++h)
+            {
+                // Ideal harmonic MIDI for this multiple.
+                float midi_h = static_cast<float>(midi)
+                               + 12.0f * log2f(static_cast<float>(h));
+                int   idx    = static_cast<int>(floorf(midi_h + 0.5f))
+                            - min_midi_local;
+                if(idx < 0 || idx >= num_notes_local)
+                    continue;
+                float mag = note_mags[idx];
+                if(mag <= 0.0f)
+                    continue;
+                score += harm_weights[h] * mag;
+            }
+            if(score > out_score)
+            {
+                out_score = score;
+                out_midi  = midi;
+            }
+        }
+    };
+
+    // For each configuration, estimate a "suggested note" (fundamental)
+    // from the harmonic stack over the 100 ms analysis slice. Also
+    // compute an expected note from the V/OCT setting when applicable,
+    // and print the deviation in semitones for automated testing.
     printf("\nSuggested notes (100 ms mid-slice):\n");
     bool any_fail = false;
     const float kNoteToleranceSemitones = 2.0f;
@@ -837,24 +922,29 @@ int main(int argc, char** argv)
             continue;
         }
 
-        int best_idx = -1;
-        float best_mag = 0.0f;
-        for(int n = 0; n < num_notes; ++n)
+        int   suggested_midi = -1;
+        float suggested_score = 0.0f;
+        estimate_fundamental_midi(note_mags,
+                                  min_midi,
+                                  max_midi,
+                                  suggested_midi,
+                                  suggested_score);
+        if(suggested_midi < 0)
         {
-            if(note_mags[n] > best_mag)
-            {
-                best_mag = note_mags[n];
-                best_idx = n;
-            }
-        }
-        if(best_idx < 0)
-        {
-            printf("  %s: (no dominant note)\n", cfg.label);
+            printf("  %s: (no stable fundamental estimate)\n", cfg.label);
             continue;
         }
 
-        int suggested_midi = min_midi + best_idx;
-        float suggested_db = 20.0f * log10f(best_mag / global_max_mag);
+        // Report the loudest individual note bucket near the estimated
+        // fundamental so the printout still gives an intuitive sense of
+        // "how strong" the perceived pitch is in the slice.
+        int   nearest_idx = suggested_midi - min_midi;
+        if(nearest_idx < 0) nearest_idx = 0;
+        if(nearest_idx >= num_notes) nearest_idx = num_notes - 1;
+        float best_mag = note_mags[nearest_idx];
+        float suggested_db = (best_mag > 0.0f && global_max_mag > 0.0f)
+                                 ? 20.0f * log10f(best_mag / global_max_mag)
+                                 : -120.0f;
         char suggested_name[16];
         midi_to_name(suggested_midi, suggested_name, sizeof(suggested_name));
 

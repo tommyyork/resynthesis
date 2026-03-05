@@ -60,9 +60,11 @@ digraph Resynthesis {
     // ------------------------------------------------------------------
     // Main audio path blocks
     // ------------------------------------------------------------------
-    mix_in [label="Input mix &\\npre‑conditioning\\n\\n• Mix IN L/R to mono\\n• Gentle soft clip\\n• Feed analysis buffer"];
+    mix_in [label="Input mix &\\npre‑conditioning\\n\\n• Mix IN L/R to mono\\n• Gentle soft clip"];
 
-    ana_buf [label="Analysis buffer\\n(FFT window)\\n\\n• Rolling history of audio\\n• Each grain reads a full\\n  window of sound"];
+    shift [label="Shifting block\\n(pitch & frequency)\\n\\n• Active when PITCH LOCK is on\\n• Detects input pitch with a\\n  harmonic comb analyser\\n• Pitch‑shifts toward V/OCT note\\n• COLOR near CW crossfades into\\n  a Bode‑style frequency shifter\\n  driven by V/OCT"];
+
+    ana_buf [label="Analysis buffer\\n(FFT window)\\n\\n• Rolling history of shifted\\n  audio\\n• Each grain reads a full\\n  window of sound"];
 
     pvoc [label="Phase‑vocoder resynthesis\\n(ResynthEngine)\\n\\n• Analyze spectrum per grain\\n• Track phase & energy over time\\n• V/OCT maps bins around a\\n  musical fundamental and\\n  focuses most energy into\\n  its harmonic families"];
 
@@ -75,7 +77,8 @@ digraph Resynthesis {
     // Audio path connections
     inL  -> mix_in;
     inR  -> mix_in;
-    mix_in -> ana_buf;
+    mix_in -> shift;
+    shift -> ana_buf;
     ana_buf -> pvoc;
     pvoc -> spectral;
     spectral -> grains;
@@ -93,11 +96,11 @@ digraph Resynthesis {
         style = "rounded,dashed";
         color = "#bbbbdd";
 
-        cv1 [label="CV_1 — OFFER / FEED\\nSend amount + dry/wet\\nCCW: dry, unshifted input\\nCW: pitched, granular voice\\nwhen V/OCT is patched" shape=rect fillcolor="#fff7e6"];
+        cv1 [label="CV_1 — OFFER / FEED\\nSend amount + dry/wet\\nCCW: dry, unshifted input\\nCW: pitched, granular voice\\nwhen PITCH LOCK is on" shape=rect fillcolor="#fff7e6"];
         cv2 [label="CV_2 — Time‑stretch / density (TIMESTRETCH)\\nLeft: slower, smeared clouds\\nRight: denser, faster motion\\naround 1× time" shape=rect fillcolor="#fff7e6"];
         cv3 [label="CV_3 — FLUFF\\nGranular cloud depth:\\nadds diffusion, jitter,\\n& micro‑modulation" shape=rect fillcolor="#fff7e6"];
-        cv4 [label="CV_4 — Color (bright/dark)\\nTilt + harmonic family\\nCCW: darker / even partials\\nCW: brighter / odd partials" shape=rect fillcolor="#fff7e6"];
-        cv5 [label="CV_5 — V/OCT (0–10 V)\\nSets musical fundamental\\nC0 (0 V) up to high pitches" shape=rect fillcolor="#fff7e6"];
+        cv4 [label="CV_4 — Color (bright/dark)\\nTilt + harmonic/frequency character\\nCCW: darker / even partials\\n3 o’clock→CW: fade from pitch\\n  shifting into Bode‑style\\n  frequency shift" shape=rect fillcolor="#fff7e6"];
+        cv5 [label="CV_5 — V/OCT (0–10 V)\\nSets musical fundamental /\\nfrequency shift rate\\nC0 (0 V) up to high pitches" shape=rect fillcolor="#fff7e6"];
         cv6 [label="CV_6 — Time‑stretch / density\\nBipolar around 1× time\\nSlow clouds ↔ dense motion" shape=rect fillcolor="#fff7e6"];
         cv7 [label="CV_7 — SPARSITY\\nSelects only strongest bins\\nfor metallic / chime‑like tones" shape=rect fillcolor="#fff7e6"];
         cv8 [label="CV_8 — Phase diffusion\\nRandomizes phases for\\nnoisy, cloud‑like textures\\n(FLUFF can add extra)" shape=rect fillcolor="#fff7e6"];
@@ -111,12 +114,15 @@ digraph Resynthesis {
     cv2 -> grains  [label="Time‑stretch / density" fontsize=8];
     cv3 -> spectral [label="FLUFF stages:\\ncloud depth" fontsize=8];
     cv4 -> spectral [label="Bright / dark tilt\\n+ harmonic family" fontsize=8];
+    cv4 -> shift    [label="Crossfade pitch\\n→ frequency shift" fontsize=8];
+    cv5 -> shift    [label="Target note /\\nshift frequency" fontsize=8];
     cv5 -> pvoc     [label="V/OCT fundamental" fontsize=8];
     cv6 -> grains   [label="Time‑stretch / density" fontsize=8];
     cv7 -> spectral [label="Sparsity threshold" fontsize=8];
     cv8 -> spectral [label="Phase diffusion" fontsize=8];
 
     b7 -> comp      [label="Toggle MAX COMP\\ncompressor mode" fontsize=8];
+    b8 -> shift     [label="Enable shifting\\nwhen PITCH LOCK on" fontsize=8];
     b8 -> pvoc      [label="Mode: pitch‑locked\\ngrains vs partial‑based" fontsize=8];
 }
 """
