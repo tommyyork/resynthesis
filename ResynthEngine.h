@@ -759,7 +759,23 @@ struct SimpleResynth
                     int k = k0 * h;
                     if (k > static_cast<int>(kNumBins)) break;
                     float amount = (h & 1) ? odd_amount : even_amount;  // odd h -> odd_amount, even h -> even_amount
-                    float g = 1.0f + mode_gain * gains[h - 1] * amount;
+                    if(amount <= 0.0f)
+                        continue;
+                    // In pitch‑locked mode, keep the fundamental very strong but
+                    // ease back the higher harmonics slightly so that external
+                    // pitch detectors (like the voct tests) hear the intended
+                    // note rather than a high partial.
+                    float harmonic_gain_scale = 1.0f;
+                    if(pitch_lock_mode_ && h > 1)
+                    {
+                        if(h <= 4)
+                            harmonic_gain_scale = 0.9f;
+                        else if(h <= 8)
+                            harmonic_gain_scale = 0.75f;
+                        else
+                            harmonic_gain_scale = 0.6f;
+                    }
+                    float g = 1.0f + mode_gain * gains[h - 1] * amount * harmonic_gain_scale;
                     // Avoid exploding a single bin while still allowing a
                     // much hotter harmonic scaffold than before.
                     if (g > 4.0f)
@@ -775,20 +791,27 @@ struct SimpleResynth
                 // active, regardless of the instantaneous grain energy.
                 float fund_out = sqrtf(spectrum[k0].re * spectrum[k0].re
                                       + spectrum[k0].im * spectrum[k0].im);
-                // Target fundamental: more assertive so the stack behaves closer to a
-                // dedicated oscillator voice in pitch‑locked mode. Mix a higher fixed
-                // floor with a stronger multiple of the frame RMS so the C2/C3/C4
-                // fundamentals dominate the voct test slice.
-                float target_fund = 0.12f; // base floor
+                // Target fundamental: in pitch‑locked mode we want the detected
+                // note to sit very clearly at the requested V/OCT fundamental.
+                // Make the floor and RMS‑linked target more assertive only when
+                // pitch locking is active so the offline V/OCT tests lock to
+                // the correct MIDI note, while leaving the partial‑based mode
+                // closer to the previous voicing.
+                float target_fund = 0.12f; // base floor (shared)
                 if (last_frame_spectral_energy > 0.0f)
                 {
                     float from_energy = 2.0f * last_frame_spectral_energy;
+                    // In pitch‑locked mode, lean harder on the RMS so the
+                    // harmonic stack behaves more like a dedicated oscillator.
+                    if(pitch_lock_mode_)
+                        from_energy *= 1.8f;
                     if (target_fund < from_energy)
                         target_fund = from_energy;
                 }
                 // Cap the target so extremely hot or pathological frames do not
-                // blow up the stack; tuned by ear / tests.
-                const float max_target_fund = 0.40f;
+                // blow up the stack; tuned by ear / tests. Allow a higher cap
+                // only for pitch‑locked operation.
+                float max_target_fund = pitch_lock_mode_ ? 0.55f : 0.40f;
                 if (target_fund > max_target_fund)
                     target_fund = max_target_fund;
                 if (target_fund > 0.0f && fund_out < target_fund)
@@ -808,7 +831,10 @@ struct SimpleResynth
                 // only up to num_harmonics. Each harmonic must be at
                 // least half as loud as the previous one, independent of
                 // the original grain magnitudes, so the harmonic stack
-                // itself remains strong and clearly audible.
+                // itself remains strong and clearly audible. In pitch‑locked
+                // mode we additionally taper the upper harmonics a little
+                // more so that the fundamental and first few partials win
+                // the suggested‑note analysis used in the voct tests.
                 for (int h = 2; h <= num_harmonics; ++h)
                 {
                     int k = k0 * h;
@@ -823,6 +849,17 @@ struct SimpleResynth
                                          + spectrum[k].im * spectrum[k].im);
 
                     float min_from_prev = 0.5f * prev_mag;
+                    if(pitch_lock_mode_)
+                    {
+                        // Soften higher harmonics a bit more in pitch‑locked
+                        // mode: beyond the 4th harmonic we let the required
+                        // floor fall slightly faster so the energy stack stays
+                        // weighted toward the low end.
+                        if(h >= 5)
+                            min_from_prev *= 0.85f;
+                        if(h >= 9)
+                            min_from_prev *= 0.75f;
+                    }
                     float target_mag    = min_from_prev;
 
                     if (target_mag > 0.0f && out_mag < target_mag)
@@ -837,6 +874,33 @@ struct SimpleResynth
                     }
 
                     prev_mag = out_mag;
+                }
+
+                // In pitch‑locked mode, enforce a strict monotonic falloff of
+                // harmonic energy so that the fundamental is always the single
+                // strongest harmonic in the stack. This greatly improves
+                // external pitch detection (including the offline V/OCT tests)
+                // while still leaving a useful harmonic spectrum for musical
+                // timbre.
+                if(pitch_lock_mode_ && fund_out > 0.0f)
+                {
+                    for(int h = 2; h <= num_harmonics; ++h)
+                    {
+                        int k = k0 * h;
+                        if(k > static_cast<int>(kNumBins))
+                            break;
+                        float allowed = fund_out * powf(0.6f, static_cast<float>(h - 1));
+                        if(allowed <= 0.0f)
+                            continue;
+                        float mag = sqrtf(spectrum[k].re * spectrum[k].re
+                                          + spectrum[k].im * spectrum[k].im);
+                        if(mag > allowed)
+                        {
+                            float scale = allowed / mag;
+                            spectrum[k].re *= scale;
+                            spectrum[k].im *= scale;
+                        }
+                    }
                 }
 
                 // Harmonic focusing: when V/OCT is active, de‑emphasise bins

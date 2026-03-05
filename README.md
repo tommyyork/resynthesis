@@ -4,6 +4,25 @@ This example implements a phase-vocoder-style resynthesis effect for Daisy Patch
 
 Incoming audio is analyzed into overlapping FFT grains, processed spectrally (phase propagation, V/OCT pitch, spectral flattening, bright/dark tilt, sparsity, and phase diffusion), and resynthesized with overlap-add back to the output. The V/OCT input (0–10 V) sets the fundamental frequency so the module can be used as an oscillator in a bass patch.
 
+### Offline tests vs hardware signal path
+
+The offline tests under `test/` are designed for **analysis and regressions**, not for level‑matched listening against the live module:
+
+- **V/OCT harmonic tests (`make voct`, `test/test_resynth_voct.cpp`)**  
+  - The processed passes are rendered **100% wet** with **no dry mix, no compressor, and no soft clip**.  
+  - Grains are normalized only by hop size and active‑grain count, which keeps the **internal DSP stable** but typically yields WAVs that are **much quieter than the dry input**.  
+  - This is intentional: the goal is **stable spectra and reliable note detection** (CSV/SVG analysis, suggested‑note checks), not loudness parity with the original sample or with the hardware output.
+
+- **Harmonic engine tests (`make samples` → `test_resynth_harmonic`, `out/harmonic/*.wav`)**  
+  - These also run the simplified harmonic resynth engine **fully wet** without the Patch‑SM output chain (no OFFER dry path, no post‑clip compressor, no panel‑driven MAX COMP).  
+  - As a result, the harmonic test WAVs can also sit **significantly below** the level of the source material even though the spectra and pitch tracking match the intended behaviour.
+
+- **Hardware firmware (`Resynthesis.cpp`)**  
+  - On the Daisy Patch SM, the same core engine is wrapped in a **full output path**: OFFER dry/wet crossfade, hop/overlap‑aware wet gain smoothing, **smoothing‑dependent loudness compensation**, **soft clipping**, and a **fixed compressor/optional MAX COMP** stage.  
+  - This chain is where the “finished instrument” loudness lives; the offline tests intentionally **omit** it so they can focus on **spectral behaviour, pitch stability, and CV‑to‑pitch mapping**.
+
+If you A/B the `make voct` / harmonic WAVs against the original samples or the hardware output, expect them to be **significantly quieter**; treat them as **analysis fixtures**, not as loudness‑matched renderings of the module.
+
 ## Title: 化 (huà)
 
 The panel uses the single character **化** (*huà*) as its primary title, from the *Daodejing* (道德經) in the sense of **transformation**—the change of one state into another, as in the phrase **化而欲作** (*huà ér yù zuò*, “when transformation arises, desire stirs”; ch. 37). Here it evokes the transformation of incoming sound through the phase vocoder into new timbres and textures.

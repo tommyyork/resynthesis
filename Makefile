@@ -6,6 +6,7 @@ USE_DAISYSP_LGPL = 1
 # Sources
 CPP_SOURCES = Resynthesis.cpp \
               Compression.cpp \
+              Shifting.cpp \
 
 # Library Locations (use local submodules)
 LIBDAISY_DIR = ./libDaisy
