@@ -7,3 +7,6 @@
 [submodule "DaisyExamples"]
 	path = DaisyExamples
 	url = https://github.com/electro-smith/DaisyExamples.git
+[submodule "inspiration/theallelectricsmartgrid"]
+	path = inspiration/theallelectricsmartgrid
+	url = https://github.com/jvictor0/theallelectricsmartgrid.git
