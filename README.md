@@ -3,6 +3,11 @@
 This example implements a resynthesis effect for Daisy Patch SM, initially inspired by [the All Electric Smart Grid project](https://github.
 com/jvictor0/theallelectricsmartgrid)  but grew towards a granular direction as I added additional processing / while iterating on the output sounds. **This is maybe 90% GPT (🤖), 10% human, so buyer beware if you fork this or use this code.** There are plenty of bugs.
 
+The panel design has had a lot of work, wanted to procedurally generate it from the KiCad files for Patch.Init():
+
+![Panel render](panel/Render.png)
+
+
 Incoming audio is analyzed into overlapping FFT grains, processed spectrally (phase propagation, V/OCT pitch, spectral flattening, bright/dark tilt, sparsity, and phase diffusion), and resynthesized with overlap-add back to the output. The V/OCT input (0–10 V) sets the fundamental frequency so the module can be used as an oscillator in a bass patch.
 
 ### Offline tests vs hardware signal path
