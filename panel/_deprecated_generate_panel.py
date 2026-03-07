@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate the canonical Resynthesis front-panel SVG (`ResynthesisPanel.svg`).
+DEPRECATED: Legacy Resynthesis front-panel SVG generator.
 
-This script is the single mechanical source-of-truth for the Resynthesis panel.
-It emits a 3U × 10HP SVG (128.5 × 50.8 mm) whose drill centres, SD-card cutout,
-and Eurorack mounting screw slots match:
+This module is deprecated. Prefer `generate_panel_kicad.py` for panel generation.
+It is kept for backward compatibility and tests that still import panel constants
+and builders (e.g. build_panel_svg, build_background_svg, build_silkscreen_svg).
 
-- The Electrosmith Patch.Init NPTH / Edge_Cuts Gerbers used elsewhere
-  in this folder.
-- The Eurorack / Doepfer A-100 mechanical standard summarized in
-  `eurorack_spec/README.md` (panel height 128.5 mm, mounting rows 3 mm from
-  top and bottom edges).
+Originally generated the canonical Resynthesis front-panel SVG (ResynthesisPanel.svg):
+3U × 10HP (128.5 × 50.8 mm) with drill centres, SD-card cutout, and Eurorack
+mounting screw slots matching the Patch.Init KiCad PCB and eurorack_spec.
 
-Run this script whenever you need to regenerate `ResynthesisPanel.svg`:
+To regenerate the panel SVG using this deprecated script:
 
-  python3 generate_resynthesis_panel_svg.py
-
-By default it overwrites `ResynthesisPanel.svg` next to this script.
+  python3 _deprecated_generate_panel.py
 """
 
 from __future__ import annotations
@@ -27,174 +23,42 @@ import re
 from string import Template
 
 
+from generate_panel_kicad import (
+    DEFAULT_KICAD_PCB,
+    FAMILY_JACK,
+    FAMILY_LED,
+    FAMILY_POT,
+    FAMILY_SWITCH_B7,
+    FAMILY_SWITCH_B8,
+    _parse_holes_from_kicad,
+    _parse_sd_slot_from_kicad,
+)
+
 HERE = Path(__file__).parent
 OUTPUT_DIR = HERE / "output"
 DEFAULT_OUTPUT = OUTPUT_DIR / "ResynthesisPanel.svg"
+SILKSCREEN_OUTPUT = OUTPUT_DIR / "silkscreen.svg"
+BACKGROUND_OUTPUT = OUTPUT_DIR / "background.svg"
 
 # 3U × 10HP panel geometry (mm), matching eurorack_spec/README.md.
 PANEL_WIDTH_MM = 50.8
 PANEL_HEIGHT_MM = 128.5
 
-# Patch.Init panel origin in Gerber/Excellon coordinates (mm), shared with
-# test_panel_alignment.py so that NPTH drills, Edge_Cuts and KiCad PCB all map
-# into the same panel-local coordinate system.
-PATCH_INIT_PANEL_ORIGIN_X_MM = 26.545
-PATCH_INIT_PANEL_ORIGIN_Y_MM = -27.095  # Gerber/Excellon Y is negative downward
-OY_TOP_MM = 27.095  # -Gerber Y for the top edge
+# Drill diameters (mm) from Patch.Init KiCad / panel datasheets.
 
 
-def _panel_assets_drill_path() -> Path:
-    """Return the path to the Patch.Init NPTH drill file in the panel assets."""
-    return HERE / "assets" / "patch_init_gerbers" / "blank-NPTH.drl"
-
-
-def _panel_assets_edge_cuts_path() -> Path:
-    """Return the path to the Patch.Init Edge_Cuts file in the panel assets."""
-    return HERE / "assets" / "patch_init_gerbers" / "blank-Edge_Cuts.gbr"
-
-
-def _summarize_npth_families_from_drill() -> dict[str, float]:
-    """Infer per-family drill diameters (mm) directly from blank-NPTH.drl.
-
-    The NPTH drill file is the manufacturing source of truth. We derive:
-
-    - 2 × mounting holes
-    - 1 × LED
-    - 1 × B_7 toggle switch (TL1105… / 5.5 mm tool)
-    - 13 × S_JACK audio/CV jacks
-    - 4 × 9MM_SNAP-IN_POT potentiometers
-
-    purely from tool diameters and usage counts, without assuming any fixed
-    numeric values in this script. If parsing fails, we fall back to the
-    previously hard-coded dimensions so the script still produces a panel.
-    """
-    path = _panel_assets_drill_path()
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        # Legacy fallback: keep the previous approximate values.
-        return {
-            "mount": 3.0,
-            "led": 3.2,
-            "switch": 5.5,
-            "jack": 6.2,
-            "pot": 7.2,
-        }
-
-    tool_diam_mm: dict[str, float] = {}
-    current_tool: str | None = None
-    holes_by_diam: dict[float, int] = {}
-
-    # First pass: tool definitions (e.g. T1C3.000).
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(";"):
-            continue
-        m_tool = re.match(r"^T(\d+)C([0-9.]+)", line)
-        if m_tool:
-            tool_id = f"T{m_tool.group(1)}"
-            tool_diam_mm[tool_id] = float(m_tool.group(2))
-
-    # Second pass: count how many times each tool is used at a coordinate.
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(";"):
-            continue
-
-        m_select = re.match(r"^T(\d+)\s*$", line)
-        if m_select:
-            current_tool = f"T{m_select.group(1)}"
-            continue
-
-        if "X" not in line or "Y" not in line:
-            continue
-
-        coords = re.findall(r"X([-\d.]+)Y([-\d.]+)", line)
-        if not coords or current_tool is None:
-            continue
-        diam = tool_diam_mm.get(current_tool)
-        if diam is None:
-            continue
-        holes_by_diam[diam] = holes_by_diam.get(diam, 0) + len(coords)
-
-    if not holes_by_diam:
-        # Legacy fallback: keep the previous approximate values.
-        return {
-            "mount": 3.0,
-            "led": 3.2,
-            "switch_b7": 5.5,
-            "jack": 6.2,
-            "pot": 7.2,
-        }
-
-    # Identify families by relative size and approximate usage:
-    #
-    # - 2 × ~3.0 mm mounting
-    # - 1 × ~3.2 mm LED
-    # - 1 × ~5.5 mm B_7 TL1105… toggle switch
-    # - 13 × ~6.2 mm S_JACK audio/CV jacks (plus one B_8 toggle sharing the same tool)
-    # - 4 × ~7.2 mm 9MM_SNAP-IN_POT potentiometers
-    #
-    # To be robust to future changes we avoid hard-coding exact usage counts
-    # where possible and instead pick the diameter closest to an expected
-    # nominal value, ensuring each family is assigned at most one diameter.
-
-    # Helper: choose, from the remaining diameters, the one closest to an
-    # expected nominal value. Optionally constrain by a predicate on (diam, count).
-    remaining = dict(holes_by_diam)
-
-    def _pop_closest(target: float, *, predicate=None, default: float) -> float:
-        best_d = None
-        best_err = float("inf")
-        for d, c in remaining.items():
-            if predicate is not None and not predicate(d, c):
-                continue
-            err = abs(d - target)
-            if err < best_err:
-                best_err = err
-                best_d = d
-        if best_d is None:
-            return default
-        remaining.pop(best_d, None)
-        return best_d
-
-    mount_diam = _pop_closest(
-        3.0,
-        predicate=lambda d, c: c >= 2 and d <= 4.0,
-        default=3.0,
-    )
-    led_diam = _pop_closest(
-        3.2,
-        predicate=lambda d, c: c >= 1 and d < 4.0 and d != mount_diam,
-        default=3.2,
-    )
-    # B_7 switch uses its own 5.5 mm drill tool.
-    switch_b7_diam = _pop_closest(
-        5.5,
-        predicate=lambda d, c: c >= 1 and 4.5 <= d <= 6.0,
-        default=5.5,
-    )
-    jack_diam = _pop_closest(
-        6.2,
-        predicate=lambda d, c: c >= 10 and 5.5 <= d <= 7.0,
-        default=6.2,
-    )
-    pot_diam = _pop_closest(
-        7.2,
-        predicate=lambda d, c: c >= 2 and d >= 6.5,
-        default=7.2,
-    )
-
+def _npth_family_diameters() -> dict[str, float]:
+    """Per-family drill diameters (mm) from Patch.Init / panel datasheets."""
     return {
-        "mount": mount_diam,
-        "led": led_diam,
-        "switch_b7": switch_b7_diam,
-        "jack": jack_diam,
-        "pot": pot_diam,
+        "mount": 3.0,
+        "led": 3.2,
+        "switch_b7": 5.5,
+        "jack": 6.2,
+        "pot": 7.2,
     }
 
 
-_NPTH_FAMILY_DIAMETERS_MM = _summarize_npth_families_from_drill()
+_NPTH_FAMILY_DIAMETERS_MM = _npth_family_diameters()
 
 # Per-family NPTH drill diameters (mm), derived from blank-NPTH.drl.
 MOUNT_DRILL_DIAMETER_MM = _NPTH_FAMILY_DIAMETERS_MM["mount"]
@@ -235,7 +99,7 @@ def _format_screw_slots() -> str:
       can be mounted with four screws while still matching the original board
       hardware for the two stock mounting holes.
 
-    Slots are “wide rather than tall”: width > height in panel coordinates.
+    Slots are "wide rather than tall": width > height in panel coordinates.
     The tests in `test_panel_alignment.py` treat these as black-filled rects
     with small dimensions in mm, and verify that their vertical centres are
     3 mm from the top/bottom edges (rail alignment).
@@ -380,7 +244,7 @@ PANEL_TEMPLATE = Template(
   <!-- Mounting screw slots: wide rectangular, aligned with Eurorack rails (3 mm from top/bottom) -->
 $SCREW_SLOTS
 
-  <!-- SD card holder cutout (matches patch_init_gerbers/blank-Edge_Cuts.gbr) -->
+  <!-- SD card holder cutout (from Patch.Init KiCad PCB) -->
   <rect x="24.14" y="33.493" width="3.208" height="12.802" fill="none" stroke="#ffffff" stroke-width="0.2" />
 
   <!-- Pots CV_1-CV_4 (9MM_SNAP-IN_POT… → ${POT_DIAMETER_MM} mm panel holes) -->
@@ -474,119 +338,175 @@ $SCREW_SLOTS
 """
 )
 
+# Same dimensions as hardware-centers-kicad.svg (50.8 × 128.5 mm).
+SVG_VIEWBOX = "0 0 50.8 128.5"
+SVG_DIMS = 'width="50.8mm" height="128.5mm" viewBox="0 0 50.8 128.5"'
 
-def _load_drill_holes_from_npht() -> list[tuple[float, float, float]]:
-    """Load NPTH drill holes from blank-NPTH.drl as panel-local (x, y, r) tuples.
+# Background-only SVG: defs (patterns + masks), base rect, pattern rects, gold border. No holes, text, or jack boxes.
+BACKGROUND_TEMPLATE = Template(
+    """<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Background layer for Resynthesis panel. Same dimensions as hardware-centers-kicad.svg. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  $DIMS
+>
+  <defs>
+    <style type="text/css">
+      .panel-text { font-family: Gidole, 'DIN Alternate', 'DIN 2014', sans-serif; }
+    </style>
+    <pattern id="patternSquares" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="4" height="4"
+            fill="none"
+            stroke="#d4af37"
+            stroke-width="0.2"
+            stroke-dasharray="2 1" />
+    </pattern>
+    <pattern id="patternDebris" width="4" height="4" patternUnits="userSpaceOnUse">
+      <line x1="0.5" y1="0.4" x2="2.0" y2="0.4"
+            stroke="#d4af37"
+            stroke-width="0.18" />
+      <line x1="2.2" y1="1.4" x2="3.5" y2="1.4"
+            stroke="#d4af37"
+            stroke-width="0.18"
+            stroke-dasharray="0.6 0.4" />
+      <line x1="0.2" y1="2.1" x2="1.4" y2="2.7"
+            stroke="#d4af37"
+            stroke-width="0.18" />
+      <line x1="2.0" y1="2.8" x2="3.8" y2="3.2"
+            stroke="#d4af37"
+            stroke-width="0.18"
+            stroke-dasharray="0.4 0.6" />
+    </pattern>
+    <pattern id="patternCircles" width="4" height="4" patternUnits="userSpaceOnUse">
+      <line x1="1.0" y1="0.8" x2="2.4" y2="0.6"
+            stroke="#d4af37"
+            stroke-width="0.2" />
+      <line x1="2.6" y1="1.0" x2="3.2" y2="2.0"
+            stroke="#d4af37"
+            stroke-width="0.2" />
+      <line x1="3.0" y1="2.6" x2="1.8" y2="3.2"
+            stroke="#d4af37"
+            stroke-width="0.2" />
+      <line x1="1.0" y1="3.0" x2="0.6" y2="1.8"
+            stroke="#d4af37"
+            stroke-width="0.2" />
+    </pattern>
+    <mask id="maskLeft">
+      <rect x="0" y="0" width="50.8" height="128.5" fill="white" />
+    </mask>
+    <mask id="maskMid">
+      <rect x="10" y="0" width="14" height="128.5" fill="white" />
+      <rect x="18" y="0" width="12" height="128.5" fill="white" />
+      <rect x="24" y="0" width="10" height="128.5" fill="white" />
+    </mask>
+    <mask id="maskRight">
+      <rect x="26" y="0" width="8" height="128.5" fill="white" />
+      <rect x="32" y="0" width="10" height="128.5" fill="white" />
+      <rect x="38" y="0" width="12.8" height="128.5" fill="white" />
+    </mask>
+  </defs>
 
-    This uses the same panel-local coordinate system as the alignment tests:
-    origin at the top-left of the panel, X to the right, Y down.
+  <rect x="0" y="0" width="50.8" height="128.5" fill="#050505" />
+  <rect x="0" y="0" width="50.8" height="128.5" fill="url(#patternSquares)" mask="url(#maskLeft)" />
+  <rect x="0" y="0" width="50.8" height="128.5" fill="url(#patternDebris)" mask="url(#maskMid)" />
+  <rect x="0" y="0" width="50.8" height="128.5" fill="url(#patternCircles)" mask="url(#maskRight)" />
+  <rect x="0.15" y="0.15" width="50.5" height="128.2" fill="none" stroke="#d4af37" stroke-width="0.3" />
+</svg>
+"""
+)
+
+# Silkscreen layer: all text labels + five white rounded rectangles around the output jacks. Same dimensions.
+SILKSCREEN_TEMPLATE = Template(
+    """<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Silkscreen layer: text labels and five white jack boxes. Same dimensions as hardware-centers-kicad.svg. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  $DIMS
+>
+  <defs>
+    <style type="text/css">
+      .panel-text { font-family: Gidole, 'DIN Alternate', 'DIN 2014', sans-serif; }
+    </style>
+  </defs>
+
+  <!-- Five white rectangular boxes around the jacks (CV_OUT_1, B5, B6, OUT L, OUT R) -->
+  <rect x="38.155" y="55.288" width="8.0" height="8.0" rx="1.2"
+        fill="#ffffff" stroke="#ffffff" stroke-width="0.2" />
+  <rect x="27.483" y="80.562" width="8.0" height="8.0" rx="1.2"
+        fill="#ffffff" stroke="#ffffff" stroke-width="0.2" />
+  <rect x="39.650" y="80.562" width="8.0" height="8.0" rx="1.2"
+        fill="#ffffff" stroke="#ffffff" stroke-width="0.2" />
+  <rect x="27.483" y="107.900" width="8.0" height="8.0" rx="1.2"
+        fill="#ffffff" stroke="#ffffff" stroke-width="0.2" />
+  <rect x="39.650" y="107.900" width="8.0" height="8.0" rx="1.2"
+        fill="#ffffff" stroke="#ffffff" stroke-width="0.2" />
+
+  <!-- Title -->
+  <text x="25.4" y="8" class="panel-text" font-size="4" text-anchor="middle" fill="#ffffff">&#21270;</text>
+  <text x="25.4" y="13" class="panel-text" font-size="3.6" text-anchor="middle" fill="#f5e3a1">RESYNTHESIS</text>
+
+  <!-- Pot labels -->
+  <text x="11.176" y="33" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">OFFER</text>
+  <text x="39.65" y="33" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">TIMESTRETCH</text>
+  <text x="11.176" y="52" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">FLUFF</text>
+  <text x="39.65" y="52" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">COLOR</text>
+
+  <!-- Switch labels -->
+  <text x="8.65" y="66.5" class="panel-text" font-size="3.53" text-anchor="middle" fill="#ffffff">MAX</text>
+  <text x="8.65" y="70.03" class="panel-text" font-size="3.53" text-anchor="middle" fill="#ffffff">COMP</text>
+  <text x="25.503" y="69.2" class="panel-text" font-size="3.53" text-anchor="middle" fill="#ffffff">PITCH</text>
+  <text x="25.503" y="72.73" class="panel-text" font-size="3.53" text-anchor="middle" fill="#ffffff">LOCK</text>
+  <text x="42.155" y="66.9" class="panel-text" font-size="3.53" text-anchor="middle" fill="#ffffff">!!!</text>
+
+  <!-- Jack labels: top row -->
+  <text x="7.15" y="79.0" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">B10</text>
+  <text x="19.317" y="79.0" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">B9</text>
+  <text x="31.483" y="79.0" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">B5</text>
+  <text x="43.65" y="79.0" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">B6</text>
+
+  <!-- Jack labels: middle row -->
+  <text x="7.15" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">V/OCT</text>
+  <text x="19.317" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">SMOOTH</text>
+  <text x="31.483" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">SPARSITY</text>
+  <text x="43.65" y="92.8" class="panel-text" font-size="3.6" text-anchor="middle"
+        fill="#ffffff"
+        font-family="DIN 2014, Gidole, 'DIN Alternate', sans-serif"
+        font-style="italic">D</text>
+
+  <!-- Jack labels: bottom row -->
+  <text x="7.15" y="106.4" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">IN L</text>
+  <text x="19.317" y="106.4" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">IN R</text>
+  <text x="31.483" y="106.4" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">OUT L</text>
+  <text x="43.65" y="106.4" class="panel-text" font-size="3.6" text-anchor="middle" fill="#ffffff">OUT R</text>
+</svg>
+"""
+)
+
+
+def _load_drill_holes_from_kicad(kicad_path: Path | None = None) -> list[tuple[float, float, float]]:
+    """Load NPTH hole centres from Patch.Init KiCad PCB as panel-local (x, y, r) mm.
+    r is the panel cutout radius (for drawing).
     """
-    path = _panel_assets_drill_path()
+    path = kicad_path or DEFAULT_KICAD_PCB
     if not path.exists():
         return []
-
-    text = path.read_text(encoding="utf-8", errors="ignore")
-
-    import re as re_mod
-
-    tool_diam_mm: dict[str, float] = {}
-    current_tool: str | None = None
-    holes: list[tuple[float, float, float]] = []
-
-    # Tool definitions: T1C3.000, T2C3.200, ...
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(";"):
-            continue
-        m_tool = re_mod.match(r"^T(\d+)C([0-9.]+)", line)
-        if m_tool:
-            tool_id = f"T{m_tool.group(1)}"
-            tool_diam_mm[tool_id] = float(m_tool.group(2))
-            continue
-
-    # Second pass for coordinates.
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(";"):
-            continue
-
-        m_select = re_mod.match(r"^T(\d+)\s*$", line)
-        if m_select:
-            current_tool = f"T{m_select.group(1)}"
-            continue
-
-        if "X" not in line or "Y" not in line:
-            continue
-
-        coords = re_mod.findall(r"X([-\d.]+)Y([-\d.]+)", line)
-        if not coords or current_tool is None:
-            continue
-        diam = tool_diam_mm.get(current_tool)
-        if diam is None:
-            continue
-        r = diam / 2.0
-
-        for xs, ys in coords:
-            gx = float(xs)
-            gy = float(ys)
-            lx = gx - PATCH_INIT_PANEL_ORIGIN_X_MM
-            ly = -gy - OY_TOP_MM
-            holes.append((lx, ly, r))
-
-    return holes
+    raw = _parse_holes_from_kicad(path)  # (x, y, family)
+    r_by_family = {
+        FAMILY_POT: POT_PANEL_DIAMETER_MM / 2.0,
+        FAMILY_JACK: JACK_PANEL_DIAMETER_MM / 2.0,
+        FAMILY_SWITCH_B7: SWITCH_B7_PANEL_DIAMETER_MM / 2.0,
+        FAMILY_SWITCH_B8: SWITCH_B8_PANEL_DIAMETER_MM / 2.0,
+        FAMILY_LED: LED_DRILL_DIAMETER_MM / 2.0,
+    }
+    return [(x, y, r_by_family.get(f, 0.7)) for (x, y, f) in raw]
 
 
-def _gerber_x46_to_mm(val: int) -> float:
-    """Convert Gerber 4.6 format (4 int, 6 decimal) to mm."""
-    return val / 1e6
-
-
-def _load_sd_slot_from_edge_cuts() -> tuple[float, float, float, float] | None:
-    """Load SD card holder cutout from blank-Edge_Cuts.gbr as panel-local rect.
-
-    Returns (x, y, width, height) in panel-local mm, or None if the Edge_Cuts
-    file is missing or the slot cannot be identified. The coordinate system
-    matches the NPTH drill parsing helpers: origin at the top-left of the panel,
-    X to the right, Y down.
-    """
-    path = _panel_assets_edge_cuts_path()
+def _load_sd_slot_from_kicad(kicad_path: Path | None = None) -> tuple[float, float, float, float] | None:
+    """Load SD card cutout from Patch.Init KiCad PCB as panel-local (x, y, w, h) mm."""
+    path = kicad_path or DEFAULT_KICAD_PCB
     if not path.exists():
         return None
-
-    text = path.read_text(encoding="utf-8", errors="ignore")
-
-    import re as re_mod
-
-    ox = PATCH_INIT_PANEL_ORIGIN_X_MM
-    oy_top = OY_TOP_MM
-
-    points: list[tuple[float, float]] = []
-    for match in re_mod.finditer(r"X(-?\d+)Y(-?\d+)", text, re_mod.IGNORECASE):
-        gx = _gerber_x46_to_mm(int(match.group(1)))
-        gy = _gerber_x46_to_mm(int(match.group(2)))
-        lx = gx - ox
-        ly = -gy - oy_top
-        points.append((lx, ly))
-
-    # Find all axis-aligned rectangles (consecutive 4 points that form a bbox).
-    # Board outline is 50.8 x 128.5 mm; SD slot is ~3.2 x 12.8 mm.
-    rects: list[tuple[float, float, float, float]] = []
-    for i in range(len(points) - 3):
-        xs = [points[i + j][0] for j in range(4)]
-        ys = [points[i + j][1] for j in range(4)]
-        xmin, xmax = min(xs), max(xs)
-        ymin, ymax = min(ys), max(ys)
-        w = xmax - xmin
-        h = ymax - ymin
-        if w >= 2.0 and h >= 2.0:
-            rects.append((xmin, ymin, w, h))
-
-    # The SD slot is the rectangle that is not the board outline (50.8 x 128.5)
-    for (x, y, w, h) in rects:
-        if 2.0 <= w <= 5.0 and 8.0 <= h <= 18.0:
-            return (x, y, w, h)
-
-    return None
+    return _parse_sd_slot_from_kicad(path)
 
 
 def _add_text_backgrounds(svg: str) -> str:
@@ -661,6 +581,16 @@ def _add_text_backgrounds(svg: str) -> str:
     return pattern.sub(_repl, svg)
 
 
+def build_background_svg() -> str:
+    """Build background-only SVG (same dimensions as hardware-centers-kicad.svg)."""
+    return BACKGROUND_TEMPLATE.substitute(DIMS=SVG_DIMS)
+
+
+def build_silkscreen_svg() -> str:
+    """Build silkscreen SVG: text labels + five white jack boxes (same dimensions)."""
+    return SILKSCREEN_TEMPLATE.substitute(DIMS=SVG_DIMS)
+
+
 def build_panel_svg() -> str:
     """Render the full panel SVG as a string."""
     screw_slots = _format_screw_slots()
@@ -705,7 +635,7 @@ def build_panel_svg() -> str:
     # black areas in the SVG, even if the template artwork is edited.
     overlay_blocks: list[str] = []
 
-    holes = _load_drill_holes_from_npht()
+    holes = _load_drill_holes_from_kicad()
     if holes:
         npth_lines = [
             '  <!-- NPTH drill layer overlay: solid black holes -->',
@@ -716,7 +646,7 @@ def build_panel_svg() -> str:
         npth_lines.append("  </g>")
         overlay_blocks.append("\n".join(npth_lines))
 
-    sd_slot = _load_sd_slot_from_edge_cuts()
+    sd_slot = _load_sd_slot_from_kicad()
     if sd_slot is not None:
         sx, sy, sw, sh = sd_slot
         sd_lines = [
@@ -736,7 +666,7 @@ def build_panel_svg() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate the canonical Resynthesis panel SVG (ResynthesisPanel.svg)."
+        description="Generate the canonical Resynthesis panel SVG (ResynthesisPanel.svg). [DEPRECATED: prefer generate_panel_kicad.py]"
     )
     parser.add_argument(
         "-o",
@@ -751,9 +681,15 @@ def main() -> None:
     output_path = args.output
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(svg, encoding="utf-8")
-    print(f"Wrote Resynthesis panel SVG \u2192 {output_path}")
+    print(f"Wrote Resynthesis panel SVG → {output_path}")
+
+    # Same-dimension layers for KiCad / fabrication (50.8 × 128.5 mm).
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    BACKGROUND_OUTPUT.write_text(build_background_svg(), encoding="utf-8")
+    print(f"Wrote background layer → {BACKGROUND_OUTPUT}")
+    SILKSCREEN_OUTPUT.write_text(build_silkscreen_svg(), encoding="utf-8")
+    print(f"Wrote silkscreen layer → {SILKSCREEN_OUTPUT}")
 
 
 if __name__ == "__main__":
     main()
-

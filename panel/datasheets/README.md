@@ -18,7 +18,7 @@ This folder contains datasheets for **non-passive** components used on the Resyn
 
 ## Notes
 
-- **Panel cutouts:** The recommended panel cutout diameters in the table are taken from the Resynthesis panel design: `panel/generate_resynthesis_panel_svg.py` and the Patch.Init NPTH drill file `panel/assets/patch_init_gerbers/blank-NPTH.drl`. They match the circular holes in the generated panel SVG and the footprint overlays in `panel/footprint_calc/*_panel_overlay.svg`.
+- **Panel cutouts:** The recommended panel cutout diameters in the table are taken from the Resynthesis panel design: `panel/_deprecated_generate_panel.py` and the Patch.Init KiCad PCB `panel/assets/KiCad_PCB/ES_Daisy_Patch_SM_FB_Rev1.kicad_pcb`. They match the circular holes in the generated panel SVG and the footprint overlays in `panel/footprint_calc/*_panel_overlay.svg`.
 - **Potentiometers:** The schematic value `M-10K-B-D` matches 9 mm snap-in, 10K linear, D-shaft pots. The Bourns PTV09 datasheet is included as a representative 9 mm pot; the Daisy Patch SM datasheet also references Alpha 9 mm linear 10K (e.g. RD901F-40-15F-B10K-00D70).
 - **3.5 mm jacks:** The footprint is `S_JACK`; the Daisy Patch SM datasheet recommends Thonkiconn (e.g. WQP-WQP518MA). The PJ-301BM datasheet is included as a common equivalent.
 - **Toggle:** The schematic shows TOGGLE_ON-ON; the C&K TS series datasheet is included as a typical subminiature toggle. The Daisy datasheet also references 2MS1T1B1M2QES and TS-4A-TECQ-H.

@@ -171,7 +171,7 @@ Updated `test_resynth_cv_sweeps.cpp` so all CV sweep tests run with `SetPitchLoc
 Update the Resynthesis panel SVG so output jacks are visually grouped, then iteratively adjust the decorative rectangles and labels until the output grouping and text alignment match the desired patch.init‑style panel.
 
 **Agent response (summary)**  
-Reworked `generate_resynthesis_panel_svg.py` and the panel template to add and then refine decorative rounded rectangles around CV_OUT_1 and the OUT L/R jacks, ultimately replacing grouped outlines with individual 8 mm white rounded squares behind CV_OUT_1, B5, B6, OUT L, and OUT R. Added black rounded background boxes behind all text labels via an `_add_text_backgrounds` helper, nudged the `!!!` label and bottom jack labels to avoid overlaps and align with `MAX`/`COMP`, and regenerated `ResynthesisPanel.svg` so the final layout cleanly highlights outputs while preserving mechanical geometry.
+Reworked `_deprecated_generate_panel.py` (formerly `generate_resynthesis_panel_svg.py`) and the panel template to add and then refine decorative rounded rectangles around CV_OUT_1 and the OUT L/R jacks, ultimately replacing grouped outlines with individual 8 mm white rounded squares behind CV_OUT_1, B5, B6, OUT L, and OUT R. Added black rounded background boxes behind all text labels via an `_add_text_backgrounds` helper, nudged the `!!!` label and bottom jack labels to avoid overlaps and align with `MAX`/`COMP`, and regenerated `ResynthesisPanel.svg` so the final layout cleanly highlights outputs while preserving mechanical geometry.
 
 ---
 

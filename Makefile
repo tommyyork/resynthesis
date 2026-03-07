@@ -56,33 +56,9 @@ PANEL_OUTPUT_DIR := panel/output
 
 .PHONY: panel svg tests samples fluff test_resynth_props test_panel test_voct resynthesis-clean clean
 
-# High-level panel target:
-# 1. Regenerate the canonical ResynthesisPanel.svg from the generator script.
-# 2. Regenerate the Eurorack overlay SVG from the panel SVG.
-# 3. Export PNGs for the panel and the overlay.
-panel: $(PANEL_OUTPUT_DIR)/ResynthesisPanel.svg \
-       $(PANEL_OUTPUT_DIR)/ResynthesisPanel_eurorack_overlay.svg \
-       $(PANEL_OUTPUT_DIR)/ResynthesisPanel.png \
-       $(PANEL_OUTPUT_DIR)/ResynthesisPanel_eurorack_overlay.png
-
-# Generate the canonical panel SVG from Python into the panel output directory.
-$(PANEL_OUTPUT_DIR)/ResynthesisPanel.svg: panel/generate_resynthesis_panel_svg.py
-	@echo "Generating canonical ResynthesisPanel.svg into $(PANEL_OUTPUT_DIR)..."
-	$(PYTHON) panel/generate_resynthesis_panel_svg.py -o $@
-
-# Generate Eurorack overlay SVG (panel + HP grid + rail centers + annotations).
-$(PANEL_OUTPUT_DIR)/ResynthesisPanel_eurorack_overlay.svg: $(PANEL_OUTPUT_DIR)/ResynthesisPanel.svg panel/render_eurorack_overlay.py
-	@echo "Generating Eurorack overlay SVG into $(PANEL_OUTPUT_DIR)..."
-	$(PYTHON) panel/render_eurorack_overlay.py $< -o $@
-
-# Ensure the Eurorack overlay SVG is up to date before exporting PNGs from the SVGs.
-$(PANEL_OUTPUT_DIR)/ResynthesisPanel.png: $(PANEL_OUTPUT_DIR)/ResynthesisPanel.svg $(PANEL_OUTPUT_DIR)/ResynthesisPanel_eurorack_overlay.svg
-	@echo "Generating panel PNG from SVG (1200 dpi, high-res) into $(PANEL_OUTPUT_DIR)..."
-	$(INKSCAPE) $< --export-type=png --export-dpi=1200 --export-filename=$@
-
-$(PANEL_OUTPUT_DIR)/ResynthesisPanel_eurorack_overlay.png: $(PANEL_OUTPUT_DIR)/ResynthesisPanel_eurorack_overlay.svg
-	@echo "Generating Eurorack overlay PNG (1200 dpi, high-res) into $(PANEL_OUTPUT_DIR)..."
-	$(INKSCAPE) $< --export-type=png --export-dpi=1200 --export-filename=$@
+# Panel: generate KiCad panel PCB and footprints.
+panel:
+	$(PYTHON) panel/generate_panel_kicad.py
 
 # Offline tests:
 # - Property / stability tests (no WAVs) intended for automation.
@@ -107,9 +83,6 @@ tests: test_resynth_props voct panel test_panel firmware_size
 
 test_resynth_props:
 	$(MAKE) -C test tests
-
-test_panel:
-	$(PYTHON) panel/test_panel_alignment.py
 
 # Sample render suite: runs all offline sample-processing programs that
 # generate WAVs under test/out/ for subjective evaluation.

@@ -30,5 +30,5 @@
 <circle cx="-4.5" cy="0.0" r="2.3"/>
 <circle cx="4.5" cy="0.0" r="2.3"/>
 </g>
-<g stroke="red" stroke-width="0.15" fill="none"><circle cx="0" cy="0" r="3.175"/></g>
+<g stroke="red" stroke-width="0.15" fill="none"><circle cx="0" cy="0" r="3.75"/></g>
 </svg>
