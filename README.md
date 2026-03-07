@@ -1,14 +1,14 @@
 # Resynthesis
 
-This example implements a resynthesis effect for the Electro-Smith Daisy Patch.Init(), initially inspired by [the All Electric Smart Grid project](https://github.com/jvictor0/theallelectricsmartgrid)  but grew towards a granular direction as I added additional processing / while iterating on the output sounds. **This is maybe 90% GPT (🤖), 10% human, so buyer beware if you fork this or use this code.** There are plenty of bugs.
+This example implements a resynthesis effect for the Electro-Smith Daisy Patch.Init(), initially inspired by [the All Electric Smart Grid project](https://github.com/jvictor0/theallelectricsmartgrid) but it grew towards a granular direction as I added additional processing / while iterating on the output sounds. **This is maybe 90% GPT (🤖), 10% human, so buyer beware if you fork this or use this code.** There are plenty of bugs.
 
-The panel design has most of the development hours, U wanted to procedurally generate it from the KiCad files for Patch.Init():
+The panel design has most of the development hours, I wanted to procedurally generate it from the KiCad files for Patch.Init():
 
 ![Panel render](panel/Render.png)
 
 I've sent this off to the fab, and will make any updates once I've test fitted it on my actual Patch.Init().
 
-The panel generation code could pretty easily be adapted to generate panels for any synth module, though the drill diameters and tolerances are currently hardcoded. The background pattern-to-pattern interpolation... I wish I could take credit. See [the agent session](AGENT_SESSION.md) for the blow by blow on how that came to be.
+The panel generation code could pretty easily be adapted to generate panels for any synth module, though the drill diameters and tolerances are currently hardcoded and basically tailored for the jacks / pots / switches you see in many Eurorack modules. The background pattern-to-pattern interpolation... I wish I could take credit. See [the agent session](AGENT_SESSION.md) for the blow by blow on how that came to be.
 
 Incoming audio is analyzed into overlapping FFT grains, processed spectrally (phase propagation, V/OCT pitch, spectral flattening, bright/dark tilt, sparsity, and phase diffusion), and resynthesized with overlap-add back to the output. The V/OCT input (0–10 V) sets the fundamental frequency so the module can be used as an oscillator in a bass patch.
 
