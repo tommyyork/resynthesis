@@ -1,7 +1,6 @@
 # Resynthesis
 
-This example implements a resynthesis effect for the Electro-Smith Daisy Patch.Init(), initially inspired by [the All Electric Smart Grid project](https://github.
-com/jvictor0/theallelectricsmartgrid)  but grew towards a granular direction as I added additional processing / while iterating on the output sounds. **This is maybe 90% GPT (🤖), 10% human, so buyer beware if you fork this or use this code.** There are plenty of bugs.
+This example implements a resynthesis effect for the Electro-Smith Daisy Patch.Init(), initially inspired by [the All Electric Smart Grid project](https://github.com/jvictor0/theallelectricsmartgrid)  but grew towards a granular direction as I added additional processing / while iterating on the output sounds. **This is maybe 90% GPT (🤖), 10% human, so buyer beware if you fork this or use this code.** There are plenty of bugs.
 
 The panel design has most of the development hours, U wanted to procedurally generate it from the KiCad files for Patch.Init():
 
