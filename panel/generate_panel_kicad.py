@@ -37,8 +37,8 @@ DEFAULT_OUTPUT_DIR = HERE / "output" / "generated_panel"
 DEFAULT_KICAD_PCB = HERE / "assets" / "KiCad_PCB" / "ES_Daisy_Patch_SM_FB_Rev1.kicad_pcb"
 BOARD_SETTINGS_REFERENCE_PCB = HERE / "assets" / "KiCAD_Custom_DRC_Rules_for_PCBWay" / "KiCAD_Custom_DRC_Rules_for_PCBWay.kicad_pcb"
 PATCH_INIT_PRETTY = HERE / "assets" / "KiCad_PCB" / "ES_Daisy_Patch_SM_FB_Rev1.pretty"
-PATTERN_SVG = HERE / "pattern.svg"
-PATTERN_B_SVG = HERE / "pattern_c.svg"
+PATTERN_SVG = HERE / "assets" / "pattern.svg"
+PATTERN_B_SVG = HERE / "assets" / "pattern_c.svg"
 # Background layout: left PATTERN_ZONE_A_WIDTH = pattern.svg only; right PATTERN_ZONE_B_WIDTH = pattern_b.svg only; middle = smooth morph.
 # Transition to B begins at panel midpoint: left half is pure A, then morph A→B from midpoint to right edge (or to start of pure B if ZONE_B > 0).
 PATTERN_ZONE_A_WIDTH = 0.28

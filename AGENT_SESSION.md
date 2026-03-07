@@ -244,3 +244,23 @@ Determine whether the code used by the `make samples` target needs to be updated
 Confirmed that the `make samples` target itself only orchestrates builds and runs of the offline test binaries, which already include the current `ResynthEngine` and parameters, so no Makefile changes are required—just re‑run the target to regenerate WAVs after engine updates. Clarified that remaining clicks in V/OCT sweeps were due to hard‑stepped fundamentals and grain resets in the tests rather than DC issues, and recommended (and then implemented elsewhere) smoothing `fundamental_hz`, removing hard grain resets, and adding short fades around note changes.
 
 ---
+
+### 25. Panel KiCad generator, mount slots, pattern boundaries, Makefile
+
+**User prompts (summary)**  
+(1) Update mount drill slots so they do not exceed 3 mm in height. (2) When connecting patterns during PATTERN_EXTEND, there should be no vertical lines; connecting lines must move to a point a positive x distance from their origin. (3) During the pattern boundary connection, each discontinuity must only have one line or curve added to it. (4) Also check for discontinuities at the rightmost edge of the morph zone. (5) Update `make panel` to simply run generate_panel_kicad.py.
+
+**Agent response (summary)**  
+In `generate_panel_kicad.py`: introduced `MOUNT_SLOT_MAX_HEIGHT_MM = 3.0` and applied it in all three places that define or use mount-slot height (current_names, _write_slot_footprint, footprint placement) so only the four screw slots are capped; the SD slot remains uncapped. For pattern boundary connection: added `PATTERN_CONNECT_MIN_DX_MM` so connecting segments never run vertical and always end at a positive x from the segment origin; replaced the many-segment 1:1 pairing with a single segment per discontinuity from centroid of left endpoints to centroid of right endpoints; added a `morph_rightmost` zone so discontinuities at the rightmost edge of the morph zone (x_morph_end) are also connected with one segment. In the Makefile, the `panel` target now only runs `panel/generate_panel_kicad.py`; the previous SVG/overlay/PNG pipeline tied to the deprecated generator was removed. All changes were committed with a substantial message covering the KiCad generator, slot cap, boundary rules, and Makefile.
+
+---
+
+### 26. Move pattern SVGs to panel/assets and update session log
+
+**User prompt**  
+Update AGENT_SESSION.md with everything since the last update. Move panel/*.svg to panel/assets. Git add and git commit with a good commit message.
+
+**Agent response (summary)**  
+Moved `panel/pattern.svg`, `panel/pattern_b.svg`, and `panel/pattern_c.svg` into `panel/assets/`. Updated `generate_panel_kicad.py` so `PATTERN_SVG` and `PATTERN_B_SVG` point to `HERE / "assets" / "pattern.svg"` and `HERE / "assets" / "pattern_c.svg"` respectively. Appended sections 25 and 26 to `AGENT_SESSION.md`: section 25 summarizes the panel KiCad work (mount slot height cap, pattern boundary rules—no vertical, one segment per discontinuity, rightmost morph edge—and Makefile panel target); section 26 records this asset move and session-log update. Staged all changes and committed with a message describing the SVG move to assets and the AGENT_SESSION.md update.
+
+---
