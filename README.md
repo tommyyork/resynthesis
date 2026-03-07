@@ -6,7 +6,7 @@ The panel design has most of the development hours, I wanted to procedurally gen
 
 ![Panel render](panel/Render.png)
 
-I've sent this off to the fab, and will make any updates once I've test fitted it on my actual Patch.Init().
+I've sent this off to the fab, and will make any updates once I've test fitted it on my actual Patch.Init(). Those labels for the pots may be too low...
 
 The panel generation code could pretty easily be adapted to generate panels for any synth module, though the drill diameters and tolerances are currently hardcoded and basically tailored for the jacks / pots / switches you see in many Eurorack modules. The background pattern-to-pattern interpolation... I wish I could take credit. See [the agent session](AGENT_SESSION.md) for the blow by blow on how that came to be.
 
