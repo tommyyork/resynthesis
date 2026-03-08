@@ -57,9 +57,24 @@ PATTERN_MORPH_EASING = "linear"
 PATTERN_BOUNDARY_CONNECT_TOL_X = 0.1   # endpoint is "on" boundary if within this in x
 # Connecting segments must move in +x from origin (no vertical); use this min delta when right x <= left x.
 PATTERN_CONNECT_MIN_DX_MM = 5
+# Interpolation toward label boxes: pattern fades to no shape over this distance (mm) outside each label rect.
+# Uses same easing as zone A→B morph for a consistent transition feel.
+PATTERN_LABEL_FALLOFF_MM = 2.0
+PATTERN_LABEL_FALLOFF_EASING = "smoothstep"
+# Terminal points: endpoints stop this fraction of the way from boundary toward the line (random in [MIN, MAX]).
+PATTERN_LABEL_TERMINAL_INSET_MIN = 0.2
+PATTERN_LABEL_TERMINAL_INSET_MAX = 0.8
+# Short arc at terminal endpoints: length (mm) and when to add (weight below threshold).
+PATTERN_LABEL_ARC_AWAY_LENGTH_MM = 0.5
+PATTERN_LABEL_ARC_AWAY_WEIGHT_THRESHOLD = 0.6
+# Bounce off mask: length of bounce arc (mm) and random curvature factor.
+PATTERN_BOUNCE_LENGTH_MM = 0.6
+PATTERN_BOUNCE_CURVATURE = 0.4
 
 # Copper pattern: trace width on F.Cu (mm)
 PATTERN_TRACE_WIDTH_MM = 0.5
+# Minimum trace width for fab (e.g. PCBWay outer layer 0.127mm); pattern width is clamped to this when writing.
+PATTERN_TRACE_WIDTH_MIN_MM = 0.127
 # Pattern scale per source: 1.0 = one tile per SVG size; 0.5 = half size (twice as many tiles per width/height)
 PATTERN_SCALE_A = 0.2   # pattern.svg (left zone)
 PATTERN_SCALE_B = 0.15   # pattern_b.svg (right zone)
@@ -1354,6 +1369,596 @@ def _morph_easing(t: float, mode: str = "linear") -> float:
     return t
 
 
+def _point_distance_to_rect(
+    x: float, y: float,
+    x_min: float, y_min: float, x_max: float, y_max: float,
+) -> float:
+    """Distance from (x,y) to the axis-aligned rect. 0 if point is inside the rect."""
+    dx = max(x_min - x, 0.0, x - x_max)
+    dy = max(y_min - y, 0.0, y - y_max)
+    return math.hypot(dx, dy)
+
+
+def _nearest_point_on_rect(
+    x: float, y: float,
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    """Nearest point on rect (x_min, y_min, x_max, y_max) to (x,y). Inside -> rect center (collapse target)."""
+    x_min, y_min, x_max, y_max = rect
+    cx = (x_min + x_max) / 2.0
+    cy = (y_min + y_max) / 2.0
+    if x_min <= x <= x_max and y_min <= y <= y_max:
+        return (cx, cy)
+    # Clamp to rect boundary
+    nx = max(x_min, min(x_max, x))
+    ny = max(y_min, min(y_max, y))
+    return (nx, ny)
+
+
+def _nearest_boundary_point_on_rect(
+    x: float, y: float,
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    """Nearest point on the rect boundary (always on the edge, including when point is inside)."""
+    x_min, y_min, x_max, y_max = rect
+    if x < x_min:
+        nx, ny = x_min, max(y_min, min(y_max, y))
+    elif x > x_max:
+        nx, ny = x_max, max(y_min, min(y_max, y))
+    elif y < y_min:
+        nx, ny = max(x_min, min(x_max, x)), y_min
+    elif y > y_max:
+        nx, ny = max(x_min, min(x_max, x)), y_max
+    else:
+        dl, dr = x - x_min, x_max - x
+        db, dt = y - y_min, y_max - y
+        d_min = min(dl, dr, db, dt)
+        if d_min == dl:
+            nx, ny = x_min, y
+        elif d_min == dr:
+            nx, ny = x_max, y
+        elif d_min == db:
+            nx, ny = x, y_min
+        else:
+            nx, ny = x, y_max
+    return (nx, ny)
+
+
+def _deterministic_random(seed: tuple[float, ...]) -> float:
+    """Deterministic value in [0, 1) from a tuple of numbers."""
+    h = 0.0
+    for v in seed:
+        h = (h * 31.0 + (v * 1e6) % 1e6) % 1e9
+    return (h % 10000) / 10000.0
+
+
+def _terminal_point_near_rect(
+    x: float, y: float,
+    rect: tuple[float, float, float, float],
+    rect_index: int,
+) -> tuple[float, float]:
+    """Point a random amount before the rect boundary (so lines don't all meet at center)."""
+    B = _nearest_boundary_point_on_rect(x, y, rect)
+    bx, by = B
+    inside = rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
+    r = _deterministic_random((x, y, rect[0], rect[1], float(rect_index)))
+    if inside:
+        dx, dy = bx - x, by - y
+        d = math.hypot(dx, dy)
+        if d < 1e-9:
+            cx, cy = (rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0
+            dx, dy = bx - cx, by - cy
+            d = math.hypot(dx, dy)
+        if d < 1e-9:
+            return (bx, by)
+        offset = 0.3 + 0.7 * r
+        return (bx + dx / d * offset, by + dy / d * offset)
+    t = PATTERN_LABEL_TERMINAL_INSET_MIN + (PATTERN_LABEL_TERMINAL_INSET_MAX - PATTERN_LABEL_TERMINAL_INSET_MIN) * r
+    return (bx + (x - bx) * t, by + (y - by) * t)
+
+
+def _short_arc_away_from_rect(
+    ex: float, ey: float,
+    rect: tuple[float, float, float, float],
+    rect_index: int,
+    length_mm: float,
+) -> tuple[str, ...]:
+    """Short arc from (ex,ey) curving away from the rect in a random direction."""
+    cx = (rect[0] + rect[2]) / 2.0
+    cy = (rect[1] + rect[3]) / 2.0
+    dx, dy = ex - cx, ey - cy
+    d = math.hypot(dx, dy)
+    if d < 1e-9:
+        angle = _deterministic_random((ex, ey, rect[0], rect[1], float(rect_index))) * 2.0 * math.pi
+    else:
+        angle = math.atan2(dy, dx) + (2 * _deterministic_random((ex + 1, ey, rect[0], rect[1], float(rect_index))) - 1) * math.pi * 0.8
+    end_x = ex + length_mm * cos(angle)
+    end_y = ey + length_mm * sin(angle)
+    mx = (ex + end_x) / 2.0
+    my = (ey + end_y) / 2.0
+    perp_x, perp_y = -(end_y - ey), end_x - ex
+    perp_len = math.hypot(perp_x, perp_y)
+    if perp_len > 1e-9:
+        bulge = 0.3 * length_mm
+        mx += perp_x / perp_len * bulge
+        my += perp_y / perp_len * bulge
+    arc = _fit_arc_through_three_points((ex, ey), (mx, my), (end_x, end_y), tol=0.05)
+    if arc is not None:
+        return ("arc", arc[0], arc[1], arc[2], arc[3], arc[4], arc[5])
+    return ("segment", ex, ey, end_x, end_y)
+
+
+def _point_inside_rect(x: float, y: float, rect: tuple[float, float, float, float]) -> bool:
+    x_min, y_min, x_max, y_max = rect
+    return x_min <= x <= x_max and y_min <= y <= y_max
+
+
+def _segment_rect_entry(
+    x1: float, y1: float, x2: float, y2: float,
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float, float, float] | None:
+    """If segment from (x1,y1) to (x2,y2) enters the rect (start outside), return (entry_x, entry_y, normal_x, normal_y). Else None."""
+    rx_min, ry_min, rx_max, ry_max = rect
+    if _point_inside_rect(x1, y1, rect):
+        return None
+    dx, dy = x2 - x1, y2 - y1
+    if dx == 0 and dy == 0:
+        return None
+    t0, t1 = 0.0, 1.0
+    entry_edge: str | None = None
+    entry_t = 1.0
+    for (edge, q, name) in [
+        (-dx, x1 - rx_min, "left"),
+        (dx, rx_max - x1, "right"),
+        (-dy, y1 - ry_min, "bottom"),
+        (dy, ry_max - y1, "top"),
+    ]:
+        if edge == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / edge
+        if edge < 0:
+            if t > t1:
+                return None
+            if t > t0:
+                t0 = t
+                entry_edge = name
+        else:
+            if t < t0:
+                return None
+            t1 = min(t1, t)
+    if t0 >= t1 or t0 <= 0:
+        return None
+    entry_t = t0
+    ex = x1 + entry_t * dx
+    ey = y1 + entry_t * dy
+    tol = 1e-6
+    if entry_edge == "left":
+        nx, ny = -1.0, 0.0
+    elif entry_edge == "right":
+        nx, ny = 1.0, 0.0
+    elif entry_edge == "bottom":
+        nx, ny = 0.0, -1.0
+    else:
+        nx, ny = 0.0, 1.0
+    return (ex, ey, nx, ny)
+
+
+def _reflect_direction(dx: float, dy: float, nx: float, ny: float) -> tuple[float, float]:
+    """Reflect direction (dx,dy) across outward normal (nx,ny). v_reflect = v - 2*dot(v,n)*n."""
+    d = dx * nx + dy * ny
+    return (dx - 2 * d * nx, dy - 2 * d * ny)
+
+
+def _arc_rect_entry(
+    arc: tuple[str, ...],
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float, float, float, float] | None:
+    """If arc enters the rect (start outside), return (entry_x, entry_y, normal_x, normal_y, entry_t). Approximates arc by sampling."""
+    _, xs, ys, xm, ym, xe, ye = arc
+    if _point_inside_rect(xs, ys, rect):
+        return None
+    n_sample = 32
+    best_t = 1.0
+    best_pt: tuple[float, float] | None = None
+    for i in range(1, n_sample + 1):
+        t = i / n_sample
+        x, y = _arc_length_and_sample(xs, ys, xm, ym, xe, ye, t)
+        if _point_inside_rect(x, y, rect):
+            best_t = t
+            best_pt = (x, y)
+            break
+    if best_pt is None:
+        return None
+    t_lo, t_hi = (best_t - 1.0 / n_sample), best_t
+    for _ in range(8):
+        t_mid = (t_lo + t_hi) / 2.0
+        x, y = _arc_length_and_sample(xs, ys, xm, ym, xe, ye, t_mid)
+        if _point_inside_rect(x, y, rect):
+            t_hi = t_mid
+            best_pt = (x, y)
+        else:
+            t_lo = t_mid
+    entry_t = (t_lo + t_hi) / 2.0
+    ex, ey = best_pt
+    dt = 0.02
+    t_before = max(0.0, entry_t - dt)
+    xb, yb = _arc_length_and_sample(xs, ys, xm, ym, xe, ye, t_before)
+    in_dx, in_dy = ex - xb, ey - yb
+    d_in = math.hypot(in_dx, in_dy)
+    if d_in < 1e-9:
+        in_dx, in_dy = xe - xs, ye - ys
+        d_in = math.hypot(in_dx, in_dy)
+    if d_in >= 1e-9:
+        in_dx, in_dy = in_dx / d_in, in_dy / d_in
+    rx_min, ry_min, rx_max, ry_max = rect
+    if abs(ex - rx_min) <= 1e-5:
+        nx, ny = -1.0, 0.0
+    elif abs(ex - rx_max) <= 1e-5:
+        nx, ny = 1.0, 0.0
+    elif abs(ey - ry_min) <= 1e-5:
+        nx, ny = 0.0, -1.0
+    else:
+        nx, ny = 0.0, 1.0
+    return (ex, ey, nx, ny, entry_t)
+
+
+def _bounce_arc_at_boundary(
+    ex: float, ey: float,
+    in_dx: float, in_dy: float,
+    nx: float, ny: float,
+    rect: tuple[float, float, float, float],
+    rect_index: int,
+    length_mm: float,
+) -> tuple[str, ...]:
+    """Short arc from (ex,ey) in the reflected direction with random curvature (bounce off mask)."""
+    rdx, rdy = _reflect_direction(in_dx, in_dy, nx, ny)
+    r_len = math.hypot(rdx, rdy)
+    if r_len < 1e-9:
+        rdx, rdy = nx, ny
+    else:
+        rdx, rdy = rdx / r_len, rdy / r_len
+    k = PATTERN_BOUNCE_CURVATURE
+    rnd = _deterministic_random((ex, ey, length_mm, float(rect_index)))
+    angle_offset = (2 * rnd - 1) * math.pi * k
+    c, s = cos(angle_offset), sin(angle_offset)
+    out_dx = rdx * c - rdy * s
+    out_dy = rdx * s + rdy * c
+    end_x = ex + length_mm * out_dx
+    end_y = ey + length_mm * out_dy
+    mx = (ex + end_x) / 2.0
+    my = (ey + end_y) / 2.0
+    perp_x = -(end_y - ey)
+    perp_y = end_x - ex
+    perp_len = math.hypot(perp_x, perp_y)
+    if perp_len > 1e-9:
+        bulge = (0.2 + 0.3 * _deterministic_random((ex + 2, ey, float(rect_index)))) * length_mm
+        mx += perp_x / perp_len * bulge
+        my += perp_y / perp_len * bulge
+    arc = _fit_arc_through_three_points((ex, ey), (mx, my), (end_x, end_y), tol=0.05)
+    if arc is not None:
+        return ("arc", arc[0], arc[1], arc[2], arc[3], arc[4], arc[5])
+    return ("segment", ex, ey, end_x, end_y)
+
+
+def _bounce_pattern_off_mask_zones(
+    primitives: list[tuple[str, ...]],
+    label_rects_board_mm: list[tuple[float, float, float, float]],
+    silkscreen_polygons_board_mm: list[list[tuple[float, float]]],
+) -> list[tuple[str, ...]]:
+    """Final step: any trace/arc that enters a mask zone is clipped at the boundary and a bounce arc is added (reflected direction + random curvature)."""
+    if not label_rects_board_mm:
+        return list(primitives)
+    out: list[tuple[str, ...]] = []
+    bounce_len = PATTERN_BOUNCE_LENGTH_MM
+    tol = 1e-6
+
+    for prim in primitives:
+        if prim[0] == "segment":
+            _, x1, y1, x2, y2 = prim
+            entry: tuple[float, float, float, float] | None = None
+            best_t = 2.0
+            hit_ri = -1
+            for ri, rect in enumerate(label_rects_board_mm):
+                e = _segment_rect_entry(x1, y1, x2, y2, rect)
+                if e is None:
+                    continue
+                ex, ey, nx, ny = e
+                t = ((ex - x1) * (x2 - x1) + (ey - y1) * (y2 - y1)) / (max(1e-12, (x2 - x1) ** 2 + (y2 - y1) ** 2))
+                if 0 < t < best_t:
+                    best_t = t
+                    entry = e
+                    hit_ri = ri
+            if entry is not None and hit_ri >= 0:
+                ex, ey, nx, ny = entry
+                rect = label_rects_board_mm[hit_ri]
+                if math.hypot(ex - x1, ey - y1) > tol:
+                    out.append(("segment", x1, y1, ex, ey))
+                in_dx = x2 - x1
+                in_dy = y2 - y1
+                d = math.hypot(in_dx, in_dy)
+                if d >= 1e-9:
+                    in_dx, in_dy = in_dx / d, in_dy / d
+                out.append(_bounce_arc_at_boundary(ex, ey, in_dx, in_dy, nx, ny, rect, hit_ri, bounce_len))
+            else:
+                out.append(prim)
+        else:
+            _, xs, ys, xm, ym, xe, ye = prim
+            entry = None
+            hit_ri = -1
+            for ri, rect in enumerate(label_rects_board_mm):
+                e = _arc_rect_entry(prim, rect)
+                if e is None:
+                    continue
+                entry = e
+                hit_ri = ri
+                break
+            if entry is not None and hit_ri >= 0:
+                ex, ey, nx, ny, entry_t = entry
+                rect = label_rects_board_mm[hit_ri]
+                t_mid = entry_t * 0.5
+                xb, yb = _arc_length_and_sample(xs, ys, xm, ym, xe, ye, t_mid)
+                in_dx = ex - xb
+                in_dy = ey - yb
+                d = math.hypot(in_dx, in_dy)
+                if d >= 1e-9:
+                    in_dx, in_dy = in_dx / d, in_dy / d
+                else:
+                    in_dx, in_dy = xe - xs, ye - ys
+                    d = math.hypot(in_dx, in_dy)
+                    if d >= 1e-9:
+                        in_dx, in_dy = in_dx / d, in_dy / d
+                if math.hypot(ex - xs, ey - ys) > tol:
+                    arc_to_entry = _fit_arc_through_three_points((xs, ys), (xb, yb), (ex, ey), tol=0.02)
+                    if arc_to_entry is not None:
+                        out.append(("arc", arc_to_entry[0], arc_to_entry[1], arc_to_entry[2], arc_to_entry[3], arc_to_entry[4], arc_to_entry[5]))
+                    else:
+                        out.append(("segment", xs, ys, ex, ey))
+                out.append(_bounce_arc_at_boundary(ex, ey, in_dx, in_dy, nx, ny, rect, hit_ri, bounce_len))
+            else:
+                out.append(prim)
+    return out
+
+
+def _segment_inside_rect_t_interval(
+    x1: float, y1: float, x2: float, y2: float,
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float] | None:
+    """Return (t0, t1) where segment (x1,y1)+t*((x2,y2)-(x1,y1)) is inside the rect, or None if no overlap."""
+    rx_min, ry_min, rx_max, ry_max = rect
+    dx, dy = x2 - x1, y2 - y1
+    if dx == 0 and dy == 0:
+        return (0.0, 1.0) if _point_inside_rect(x1, y1, rect) else None
+    t0, t1 = 0.0, 1.0
+    for (edge, q) in [
+        (-dx, x1 - rx_min),
+        (dx, rx_max - x1),
+        (-dy, y1 - ry_min),
+        (dy, ry_max - y1),
+    ]:
+        if edge == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / edge
+        if edge < 0:
+            if t > t1:
+                return None
+            t0 = max(t0, t)
+        else:
+            if t < t0:
+                return None
+            t1 = min(t1, t)
+    if t0 >= t1:
+        return None
+    return (t0, t1)
+
+
+def _clip_segment_to_exterior_of_rects(
+    x1: float, y1: float, x2: float, y2: float,
+    rects: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    """Return list of segment (xa,ya,xb,yb) portions that lie outside all rects."""
+    if not rects:
+        return [(x1, y1, x2, y2)]
+    intervals: list[tuple[float, float]] = [(0.0, 1.0)]
+    dx, dy = x2 - x1, y2 - y1
+    for rect in rects:
+        inside = _segment_inside_rect_t_interval(x1, y1, x2, y2, rect)
+        if inside is None:
+            continue
+        ta, tb = inside
+        new_intervals: list[tuple[float, float]] = []
+        for (a, b) in intervals:
+            if b <= ta or a >= tb:
+                new_intervals.append((a, b))
+            else:
+                if a < ta:
+                    new_intervals.append((a, min(b, ta)))
+                if tb < b:
+                    new_intervals.append((max(a, tb), b))
+        intervals = new_intervals
+    tol = 1e-6
+    out: list[tuple[float, float, float, float]] = []
+    for (a, b) in intervals:
+        if b - a < tol:
+            continue
+        out.append((
+            x1 + a * dx, y1 + a * dy,
+            x1 + b * dx, y1 + b * dy,
+        ))
+    return out
+
+
+def _clip_arc_to_exterior_of_rects(
+    arc: tuple[str, ...],
+    rects: list[tuple[float, float, float, float]],
+    n_sample: int = 24,
+) -> list[tuple[str, ...]]:
+    """Return list of primitives (segments) that are outside all rects. Samples arc and clips each chord."""
+    if not rects:
+        return [arc]
+    _, xs, ys, xm, ym, xe, ye = arc
+    out: list[tuple[str, ...]] = []
+    pts: list[tuple[float, float]] = []
+    for i in range(n_sample + 1):
+        t = i / n_sample
+        x, y = _arc_length_and_sample(xs, ys, xm, ym, xe, ye, t)
+        pts.append((x, y))
+    for i in range(len(pts) - 1):
+        x1, y1 = pts[i]
+        x2, y2 = pts[i + 1]
+        for seg in _clip_segment_to_exterior_of_rects(x1, y1, x2, y2, rects):
+            out.append(("segment", seg[0], seg[1], seg[2], seg[3]))
+    return out
+
+
+def _remove_pattern_inside_label_rects(
+    primitives: list[tuple[str, ...]],
+    label_rects_board_mm: list[tuple[float, float, float, float]],
+) -> list[tuple[str, ...]]:
+    """Final pass: remove any portion of each trace or arc that lies inside a text label rect."""
+    if not label_rects_board_mm:
+        return list(primitives)
+    out: list[tuple[str, ...]] = []
+    for prim in primitives:
+        if prim[0] == "segment":
+            _, x1, y1, x2, y2 = prim
+            for seg in _clip_segment_to_exterior_of_rects(x1, y1, x2, y2, label_rects_board_mm):
+                out.append(("segment", seg[0], seg[1], seg[2], seg[3]))
+        else:
+            out.extend(_clip_arc_to_exterior_of_rects(prim, label_rects_board_mm))
+    return out
+
+
+def _clip_pattern_to_rect(
+    primitives: list[tuple[str, ...]],
+    rx_min: float, ry_min: float, rx_max: float, ry_max: float,
+) -> list[tuple[str, ...]]:
+    """Clip every segment and arc to the panel rectangle. Splits lines/arcs that cross the edge; removes any portion outside."""
+    out: list[tuple[str, ...]] = []
+    for prim in primitives:
+        if prim[0] == "segment":
+            _, x1, y1, x2, y2 = prim
+            for seg in _clip_segment_to_rect(x1, y1, x2, y2, rx_min, ry_min, rx_max, ry_max):
+                out.append(("segment", seg[0], seg[1], seg[2], seg[3]))
+        else:
+            _, xs, ys, xm, ym, xe, ye = prim
+            n_sample = 24
+            pts: list[tuple[float, float]] = []
+            for i in range(n_sample + 1):
+                t = i / n_sample
+                x, y = _arc_length_and_sample(xs, ys, xm, ym, xe, ye, t)
+                pts.append((x, y))
+            for i in range(len(pts) - 1):
+                x1, y1 = pts[i]
+                x2, y2 = pts[i + 1]
+                for seg in _clip_segment_to_rect(x1, y1, x2, y2, rx_min, ry_min, rx_max, ry_max):
+                    out.append(("segment", seg[0], seg[1], seg[2], seg[3]))
+    return out
+
+
+def _weight_near_label_rects(
+    x: float, y: float,
+    label_rects: list[tuple[float, float, float, float]],
+    falloff_mm: float,
+    easing: str,
+) -> float:
+    """Weight in [0,1] for point (x,y): 0 inside/near a label rect, 1 far away. Uses same easing as morph."""
+    if falloff_mm <= 0 or not label_rects:
+        return 1.0
+    d_min = min(
+        _point_distance_to_rect(x, y, r[0], r[1], r[2], r[3])
+        for r in label_rects
+    )
+    t = min(1.0, d_min / falloff_mm)
+    return _morph_easing(t, easing)
+
+
+def _interpolate_pattern_to_no_shape_near_rects(
+    primitives: list[tuple[str, ...]],
+    label_rects_board_mm: list[tuple[float, float, float, float]],
+    falloff_mm: float,
+    easing: str,
+) -> list[tuple[str, ...]]:
+    """Interpolate pattern primitives toward no shape near label rectangles (same easing as zone A→B morph).
+    Terminal points stop a random amount before the boundary (not at center); short arcs curve away in random directions.
+    """
+    if not label_rects_board_mm or falloff_mm <= 0:
+        return list(primitives)
+
+    def weight(x: float, y: float) -> float:
+        return _weight_near_label_rects(x, y, label_rects_board_mm, falloff_mm, easing)
+
+    def terminal_point(x: float, y: float) -> tuple[float, float, int]:
+        """Return (tx, ty, rect_index) for the terminal point (random before boundary)."""
+        best_r = 0
+        best_d = 1e99
+        for ri, r in enumerate(label_rects_board_mm):
+            d = _point_distance_to_rect(x, y, r[0], r[1], r[2], r[3])
+            if d < best_d:
+                best_d = d
+                best_r = ri
+        tx, ty = _terminal_point_near_rect(x, y, label_rects_board_mm[best_r], best_r)
+        return (tx, ty, best_r)
+
+    out: list[tuple[str, ...]] = []
+    eps = 1e-6
+    arc_away_len = PATTERN_LABEL_ARC_AWAY_LENGTH_MM
+    arc_away_thresh = PATTERN_LABEL_ARC_AWAY_WEIGHT_THRESHOLD
+
+    for prim in primitives:
+        if prim[0] == "segment":
+            _, x1, y1, x2, y2 = prim
+            w1, w2 = weight(x1, y1), weight(x2, y2)
+            if w1 < eps and w2 < eps:
+                continue
+            t1 = terminal_point(x1, y1)
+            t2 = terminal_point(x2, y2)
+            nx1 = x1 * w1 + t1[0] * (1.0 - w1)
+            ny1 = y1 * w1 + t1[1] * (1.0 - w1)
+            nx2 = x2 * w2 + t2[0] * (1.0 - w2)
+            ny2 = y2 * w2 + t2[1] * (1.0 - w2)
+            if math.hypot(nx2 - nx1, ny2 - ny1) < 1e-4:
+                continue
+            out.append(("segment", nx1, ny1, nx2, ny2))
+            if w1 < arc_away_thresh and w1 >= eps:
+                out.append(_short_arc_away_from_rect(nx1, ny1, label_rects_board_mm[t1[2]], t1[2], arc_away_len))
+            if w2 < arc_away_thresh and w2 >= eps:
+                out.append(_short_arc_away_from_rect(nx2, ny2, label_rects_board_mm[t2[2]], t2[2], arc_away_len))
+        else:
+            _, xs, ys, xm, ym, xe, ye = prim
+            pts = [(xs, ys), (xm, ym), (xe, ye)]
+            weights = [weight(p[0], p[1]) for p in pts]
+            if all(w < eps for w in weights):
+                continue
+            terminals = [terminal_point(p[0], p[1]) for p in pts]
+            new_pts = [
+                (p[0] * w + t[0] * (1.0 - w), p[1] * w + t[1] * (1.0 - w))
+                for p, w, t in zip(pts, weights, terminals)
+            ]
+            arc_fit = _fit_arc_through_three_points(
+                new_pts[0], new_pts[1], new_pts[2], tol=0.01
+            )
+            if arc_fit is not None:
+                out.append(("arc", arc_fit[0], arc_fit[1], arc_fit[2], arc_fit[3], arc_fit[4], arc_fit[5]))
+            else:
+                out.append(("segment", new_pts[0][0], new_pts[0][1], new_pts[1][0], new_pts[1][1]))
+                out.append(("segment", new_pts[1][0], new_pts[1][1], new_pts[2][0], new_pts[2][1]))
+            if weights[0] < arc_away_thresh and weights[0] >= eps:
+                out.append(_short_arc_away_from_rect(
+                    new_pts[0][0], new_pts[0][1],
+                    label_rects_board_mm[terminals[0][2]], terminals[0][2], arc_away_len,
+                ))
+            if weights[2] < arc_away_thresh and weights[2] >= eps:
+                out.append(_short_arc_away_from_rect(
+                    new_pts[2][0], new_pts[2][1],
+                    label_rects_board_mm[terminals[2][2]], terminals[2][2], arc_away_len,
+                ))
+    return out
+
+
 def _pattern_primitives_from_svg(
     svg_path: Path,
     panel_ox_mm: float,
@@ -2469,6 +3074,7 @@ def build_kicad_pcb(
     screw_rects = _screw_slot_rects()
     w, h = PANEL_WIDTH_MM, PANEL_HEIGHT_MM
     ox, oy = PANEL_OFFSET_X_MM, PANEL_OFFSET_Y_MM
+    label_mask_rects = _label_mask_rects_board_mm(holes, ox, oy)
 
     edge_lines = [
         f'  (gr_line (start {ox:.4f} {oy:.4f}) (end {ox + w:.4f} {oy:.4f}) (layer Edge.Cuts) (width 0.05) (tstamp {_uuid()}))',
@@ -2497,7 +3103,29 @@ def build_kicad_pcb(
         PATTERN_SCALE_A,
         PATTERN_SCALE_B,
     )
-    pattern_trace_mm = PATTERN_TRACE_WIDTH_MM * (PATTERN_SCALE_A + PATTERN_SCALE_B) / 2.0
+    pattern_segs = _interpolate_pattern_to_no_shape_near_rects(
+        pattern_segs, label_mask_rects,
+        PATTERN_LABEL_FALLOFF_MM, PATTERN_LABEL_FALLOFF_EASING,
+    )
+    silkscreen_polygons = _silkscreen_shape_polygons_board_mm(ox, oy)
+    pattern_segs = _bounce_pattern_off_mask_zones(
+        pattern_segs, label_mask_rects, silkscreen_polygons,
+    )
+    pattern_segs = _remove_pattern_inside_label_rects(pattern_segs, label_mask_rects)
+    pattern_segs = _clip_pattern_to_rect(pattern_segs, ox, oy, ox + w, oy + h)
+    pattern_trace_mm = max(
+        PATTERN_TRACE_WIDTH_MIN_MM,
+        PATTERN_TRACE_WIDTH_MM * (PATTERN_SCALE_A + PATTERN_SCALE_B) / 2.0,
+    )
+    # Drop degenerate primitives that can cause Gerber/fab validation issues
+    min_primitive_length_mm = 0.01
+    pattern_segs = [
+        p for p in pattern_segs
+        if (
+            (p[0] == "segment" and math.hypot(p[3] - p[1], p[4] - p[2]) >= min_primitive_length_mm)
+            or (p[0] == "arc" and math.hypot(p[5] - p[1], p[6] - p[2]) >= min_primitive_length_mm)
+        )
+    ]
     pattern_lines: list[str] = []
     for item in pattern_segs:
         if item[0] == "segment":
@@ -2578,8 +3206,6 @@ def build_kicad_pcb(
     pcb_content += "\n".join(silkscreen_rect_lines) + "\n\n"
     pcb_content += "\n".join(silkscreen_text_lines) + "\n\n"
     # Solder mask: holes at labels (including BRAND_LABEL) and shapes = no mask (exposed copper).
-    label_mask_rects = _label_mask_rects_board_mm(holes, ox, oy)
-    silkscreen_polygons = _silkscreen_shape_polygons_board_mm(ox, oy)
     mask_zone_lines = _solder_mask_zone_lines(ox, oy, w, h, label_mask_rects, silkscreen_polygons)
     pcb_content += "\n".join(mask_zone_lines) + "\n\n"
     pcb_content += "\n".join(edge_lines) + "\n"

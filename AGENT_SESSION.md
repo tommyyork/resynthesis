@@ -264,3 +264,31 @@ Update AGENT_SESSION.md with everything since the last update. Move panel/*.svg 
 Moved `panel/pattern.svg`, `panel/pattern_b.svg`, and `panel/pattern_c.svg` into `panel/assets/`. Updated `generate_panel_kicad.py` so `PATTERN_SVG` and `PATTERN_B_SVG` point to `HERE / "assets" / "pattern.svg"` and `HERE / "assets" / "pattern_c.svg"` respectively. Appended sections 25 and 26 to `AGENT_SESSION.md`: section 25 summarizes the panel KiCad work (mount slot height cap, pattern boundary rules—no vertical, one segment per discontinuity, rightmost morph edge—and Makefile panel target); section 26 records this asset move and session-log update. Staged all changes and committed with a message describing the SVG move to assets and the AGENT_SESSION.md update.
 
 ---
+
+### 27. Panel background pattern: label avoidance, bounce, clip to panel, fab-safe output
+
+**User prompts (summary)**  
+(1) Add vector interpolation so the background pattern fades to no shape near text label boxes (same easing as zone A→B morph). (2) Terminate lines a random amount before the label boundary and arc away in random directions instead of meeting at the center. (3) Add a final step so any trace/arc that passes into the text/solder-mask zone is clipped at the boundary and “bounces” off (reflect direction with random curvature). (4) Add a pass to remove any remaining trace or arc inside the text labels. (5) Split or trim any line/arc that extends past the panel edge so excess is removed. (6) Detect fab issues in the KiCad output and fix (minimum trace width, degenerate primitives). (7) Apply the same solder-mask treatment to the BRAND_LABEL as other text labels. (8) Reset background pattern code to commit 7b30335, keeping brand label text and placement.
+
+**Agent response (summary)**  
+In `panel/generate_panel_kicad.py`:
+
+- **Interpolation toward labels:** Added `PATTERN_LABEL_FALLOFF_MM`, `PATTERN_LABEL_FALLOFF_EASING`, and `_interpolate_pattern_to_no_shape_near_rects()` so the pattern interpolates toward “no shape” near label rects using the same easing as the zone A→B morph. Each point is blended toward a collapse target with a distance-based weight.
+
+- **Terminal points and arc-away:** Replaced center collapse with `_terminal_point_near_rect()` so endpoints stop a random fraction (e.g. 20–80%) before the label boundary. Added `_short_arc_away_from_rect()` so terminal endpoints get a short arc in a random direction (“arc away”). Uses `_deterministic_random()` for reproducible results.
+
+- **Bounce off mask:** Added `_bounce_pattern_off_mask_zones()`: for segments/arcs that enter a label rect, the primitive is clipped at the first entry point, the incoming direction is reflected across the boundary normal, and a short “bounce” arc is appended with random curvature (`PATTERN_BOUNCE_LENGTH_MM`, `PATTERN_BOUNCE_CURVATURE`). Helpers: `_segment_rect_entry()`, `_arc_rect_entry()`, `_reflect_direction()`, `_bounce_arc_at_boundary()`.
+
+- **Remove copper inside labels:** Added `_remove_pattern_inside_label_rects()` using `_clip_segment_to_exterior_of_rects()` and `_clip_arc_to_exterior_of_rects()` so any portion of a segment or arc inside a label rect is removed; only exterior portions are kept.
+
+- **Clip to panel:** Added `_clip_pattern_to_rect()` to clip every segment and arc to the panel rectangle `(ox, oy, ox+w, oy+h)`. Segments are clipped with `_clip_segment_to_rect()`; arcs are sampled and each chord is clipped, so geometry past the panel edge is split and trimmed.
+
+- **Fab-safe output:** Enforced minimum pattern trace width with `PATTERN_TRACE_WIDTH_MIN_MM = 0.127` (PCBWay outer-layer minimum); written width is `max(MIN, pattern_trace_mm)`. Added filtering to drop degenerate primitives (segment or arc chord length &lt; 0.01 mm) before writing to avoid Gerber/fab validation issues.
+
+- **Brand label mask:** Removed the special case that excluded the brand rect from the F.Mask zone holes; the brand now gets the same solder-mask treatment as other text labels (hole in the zone = exposed copper under the text). Removed the unused `_brand_label_mask_rect_board_mm` and `_rect_approx_equal` helpers.
+
+- **Reset + brand keep:** Background pattern code was reset to commit `7b3033571393ca34db95b48b7b5f87840b932f78` (no copper-under-text clipping, no bounce/remove/clip steps), then brand label constants, bbox, silkscreen text, and mask handling were re-applied so ONEIRINE and placement are preserved.
+
+Build order: `_pattern_segments_three_zone` → `_interpolate_pattern_to_no_shape_near_rects` → `_bounce_pattern_off_mask_zones` → `_remove_pattern_inside_label_rects` → `_clip_pattern_to_rect` → degenerate filter → write segments/arcs with clamped width.
+
+---
