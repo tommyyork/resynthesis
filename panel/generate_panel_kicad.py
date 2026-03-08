@@ -143,6 +143,12 @@ TITLE_Y_BOTTOM_MM = 11.0
 TITLE_SIZE_TOP_MM = 6.0
 TITLE_SIZE_BOTTOM_MM = 3.6
 
+# Brand label centered between the two mount drill holes (left and right screws, vertical center)
+BRAND_LABEL = "ONEIRINE"
+BRAND_LABEL_X_MM = PANEL_WIDTH_MM / 2.0  # 25.4, horizontal center
+# Vertical: vertical center of text is 3mm above the panel bottom edge
+BRAND_LABEL_BOTTOM_OFFSET_MM = 3.0
+
 # Component label: (panel_x_mm, panel_y_mm) -> (label_text, font_size_mm).
 # Used to match labels to drill holes (nearest hole gets the label). Font size here
 # is only a fallback; actual size is computed to fit without overlap.
@@ -1827,6 +1833,15 @@ def _silkscreen_bboxes_at_size(
             # Center bbox vertically on y_panel so mask rect aligns with text
             half_h = body_size_mm / 2.0
             bboxes.append((x_left - m, y_panel - half_h - m, x_left + w + m, y_panel + half_h + m))
+        # Brand label (same size as title); vertical center 3mm above bottom edge
+        w_brand = _estimate_text_width_mm(BRAND_LABEL, body_size_mm)
+        x_left_brand = BRAND_LABEL_X_MM - w_brand / 2.0
+        half_h = body_size_mm / 2.0
+        y_center_brand = PANEL_HEIGHT_MM - BRAND_LABEL_BOTTOM_OFFSET_MM
+        bboxes.append((
+            x_left_brand - m, y_center_brand - half_h - m,
+            x_left_brand + w_brand + m, y_center_brand + half_h + m,
+        ))
     label_list = _match_labels_to_holes(holes)
     for (drill_x, drill_y, family, text, _) in label_list:
         r_mm = _panel_cutout_diameter_mm(family) / 2.0
@@ -2110,6 +2125,10 @@ def _silkscreen_gr_text_lines(
     for (text, y_panel) in [(TITLE_TOP, TITLE_Y_TOP_MM), (TITLE_BOTTOM, TITLE_Y_BOTTOM_MM)]:
         x_center = TITLE_X_MM
         lines.append(gr_text_at(x_center, y_panel, text, size_mm))
+
+    # Brand label: horizontal center, vertical center 3mm above bottom edge.
+    brand_y_mm = PANEL_HEIGHT_MM - BRAND_LABEL_BOTTOM_OFFSET_MM
+    lines.append(gr_text_at(BRAND_LABEL_X_MM, brand_y_mm, BRAND_LABEL, size_mm))
 
     label_list = _match_labels_to_holes(holes)
     for (drill_x, drill_y, family, text, use_italic) in label_list:
@@ -2558,7 +2577,7 @@ def build_kicad_pcb(
     silkscreen_text_lines = _silkscreen_gr_text_lines(ox, oy, holes)
     pcb_content += "\n".join(silkscreen_rect_lines) + "\n\n"
     pcb_content += "\n".join(silkscreen_text_lines) + "\n\n"
-    # Solder mask: only behind labels and silkscreen shapes (e.g. output jack rounded rects); rest exposed copper.
+    # Solder mask: holes at labels (including BRAND_LABEL) and shapes = no mask (exposed copper).
     label_mask_rects = _label_mask_rects_board_mm(holes, ox, oy)
     silkscreen_polygons = _silkscreen_shape_polygons_board_mm(ox, oy)
     mask_zone_lines = _solder_mask_zone_lines(ox, oy, w, h, label_mask_rects, silkscreen_polygons)
